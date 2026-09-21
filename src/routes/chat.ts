@@ -115,7 +115,7 @@ router.post(
       status: r.status_id ? statusNameById.get(r.status_id) ?? "unknown" : "unknown",
     }));
 
-    const answer = await generateAssistantReply(content, knowledgeInputs, requestInputs);
+    const answer = await generateAssistantReply(content, knowledgeInputs, requestInputs, isStaff(user.role));
 
     const { data: assistantRow, error: assistantError } = await db
       .from("ai_messages")
