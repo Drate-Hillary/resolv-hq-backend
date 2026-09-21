@@ -1,0 +1,51 @@
+# yaml-language-server: $schema=
+#
+# Single entry point for the whole system: the backend API and the admin
+# console (resolv-hq) behind its own nginx reverse proxy. The admin app
+# still owns its Dockerfile (Docker needs it next to that app's source to
+# build), only the orchestration layer lives here.
+#
+# `docker compose up` from this directory reads .env in THIS directory for
+# every ${VAR} below, including the admin app's build args — see
+# .env.example for the full list this file needs.
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    ports:
+      - "4000:4000"
+    restart: unless-stopped
+
+  admin-app:
+    build:
+      context: ../resolv-hq
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+        NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY}
+        # Baked into the browser bundle — must be host-reachable (default:
+        # the admin-nginx port below), not the Docker-network address.
+        NEXT_PUBLIC_API_BASE_URL: ${ADMIN_PUBLIC_API_BASE_URL:-http://localhost:4000}
+    environment:
+      # Server-only (never inlined client-side, see src/backend/api/server.ts) —
+      # the Next.js server inside this container reaches the backend by its
+      # Compose service name, not by the host-facing URL above.
+      API_BASE_URL: http://backend:4000
+    depends_on:
+      - backend
+    expose:
+      - "3000"
+    restart: unless-stopped
+
+  admin-nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/admin-app.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - admin-app
+    restart: unless-stopped
