@@ -2,6 +2,15 @@
 // logic, now fed real DB reads (knowledge_documents / requests) instead of
 // client-supplied arrays. help_articles no longer exists as a table, so the
 // knowledge base for this is now knowledge_documents.
+//
+// answerQuestion() below is the deterministic, no-API-key-required fallback.
+// generateAssistantReply() is the real entry point: it calls the Model
+// Abstraction Layer (lib/llm/gateway.ts) first and only drops back to
+// answerQuestion() if no provider is registered/active or every one fails —
+// so the chat keeps working in dev with zero keys configured.
+import { completeWithFallback, GatewayUnavailableError } from "./llm/gateway.js";
+import type { LlmMessage } from "./llm/types.js";
+
 export interface AiKnowledgeInput {
   id: string;
   title: string;
@@ -92,6 +101,58 @@ export function answerQuestion(
     ],
     steps: DEFAULT_STEPS,
   };
+}
+
+/**
+ * Real entry point for chat.ts: calls whichever agent_providers row is
+ * active (with automatic fallback across providers) grounded in the
+ * knowledge base and the caller's own requests, and falls back to the
+ * deterministic answerQuestion() if no provider is configured or every
+ * provider call fails.
+ */
+export async function generateAssistantReply(
+  query: string,
+  knowledge: AiKnowledgeInput[],
+  activeRequests: AiRequestInput[],
+): Promise<AiAnswer> {
+  try {
+    const knowledgeContext = knowledge
+      .slice(0, 5)
+      .map((d) => `### ${d.title}\n${d.content.slice(0, 800)}`)
+      .join("\n\n");
+    const requestContext = activeRequests
+      .slice(0, 5)
+      .map((r) => `- "${r.title}": ${r.status}`)
+      .join("\n");
+
+    const messages: LlmMessage[] = [
+      {
+        role: "system",
+        content: [
+          "You are the Resolv-HQ customer support assistant. Answer briefly and helpfully using only the context below.",
+          "If the answer isn't in the context, say so and offer to create a support request instead.",
+          knowledgeContext ? `Knowledge base:\n${knowledgeContext}` : "",
+          requestContext ? `Customer's requests:\n${requestContext}` : "",
+        ]
+          .filter(Boolean)
+          .join("\n\n"),
+      },
+      { role: "user", content: query },
+    ];
+
+    const result = await completeWithFallback(messages);
+    return {
+      text: result.content,
+      sources: knowledge.slice(0, 3).map((d) => ({ id: d.id, title: d.title })),
+      suggestions: [],
+      steps: [...DEFAULT_STEPS.slice(0, 2), `Calling ${result.providerName} (${result.model})`, "Preparing your response"],
+    };
+  } catch (err) {
+    if (!(err instanceof GatewayUnavailableError)) {
+      console.error("LLM gateway call failed unexpectedly, falling back to keyword search:", err);
+    }
+    return answerQuestion(query, knowledge, activeRequests);
+  }
 }
 
 const CATEGORY_KEYWORDS: Record<string, string[]> = {
