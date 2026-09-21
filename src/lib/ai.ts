@@ -145,7 +145,11 @@ export async function generateAssistantReply(
       text: result.content,
       sources: knowledge.slice(0, 3).map((d) => ({ id: d.id, title: d.title })),
       suggestions: [],
-      steps: [...DEFAULT_STEPS.slice(0, 2), `Calling ${result.providerName} (${result.model})`, "Preparing your response"],
+      steps: [
+        ...DEFAULT_STEPS.slice(0, 2),
+        result.cached ? "Found a cached answer" : `Calling ${result.providerName} (${result.model})`,
+        "Preparing your response",
+      ],
     };
   } catch (err) {
     if (!(err instanceof GatewayUnavailableError)) {

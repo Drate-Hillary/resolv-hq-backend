@@ -15,8 +15,20 @@ services:
       dockerfile: Dockerfile
     env_file:
       - .env
+    environment:
+      # Overrides whatever REDIS_URL is in .env — inside Compose, Redis is
+      # only ever reachable by its service name, never localhost.
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      - redis
     ports:
       - "4000:4000"
+    restart: unless-stopped
+
+  redis:
+    image: redis:alpine
+    expose:
+      - "6379"
     restart: unless-stopped
 
   admin-app:
