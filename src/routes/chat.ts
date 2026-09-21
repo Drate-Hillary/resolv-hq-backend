@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from "express";
-import { answerQuestion, type AiKnowledgeInput, type AiRequestInput } from "../lib/ai.js";
+import { generateAssistantReply, type AiKnowledgeInput, type AiRequestInput } from "../lib/ai.js";
 import { badRequest } from "../lib/errors.js";
 import { mapChatMessageRow, mapConversationRow } from "../lib/mappers.js";
 import { assertConversationAccess } from "../lib/ownership.js";
@@ -115,7 +115,7 @@ router.post(
       status: r.status_id ? statusNameById.get(r.status_id) ?? "unknown" : "unknown",
     }));
 
-    const answer = answerQuestion(content, knowledgeInputs, requestInputs);
+    const answer = await generateAssistantReply(content, knowledgeInputs, requestInputs);
 
     const { data: assistantRow, error: assistantError } = await db
       .from("ai_messages")
