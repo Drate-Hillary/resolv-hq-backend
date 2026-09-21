@@ -10,6 +10,7 @@
 // so the chat keeps working in dev with zero keys configured.
 import { completeWithFallback, GatewayUnavailableError } from "./llm/gateway.js";
 import type { LlmMessage } from "./llm/types.js";
+import { buildSystemPrompt } from "./prompts/system-prompt.js";
 
 export interface AiKnowledgeInput {
   id: string;
@@ -114,6 +115,7 @@ export async function generateAssistantReply(
   query: string,
   knowledge: AiKnowledgeInput[],
   activeRequests: AiRequestInput[],
+  isStaffCaller = false,
 ): Promise<AiAnswer> {
   try {
     const knowledgeContext = knowledge
@@ -128,14 +130,7 @@ export async function generateAssistantReply(
     const messages: LlmMessage[] = [
       {
         role: "system",
-        content: [
-          "You are the Resolv-HQ customer support assistant. Answer briefly and helpfully using only the context below.",
-          "If the answer isn't in the context, say so and offer to create a support request instead.",
-          knowledgeContext ? `Knowledge base:\n${knowledgeContext}` : "",
-          requestContext ? `Customer's requests:\n${requestContext}` : "",
-        ]
-          .filter(Boolean)
-          .join("\n\n"),
+        content: buildSystemPrompt({ knowledgeContext, requestContext, isStaffCaller }),
       },
       { role: "user", content: query },
     ];
