@@ -27,8 +27,12 @@ services:
 
   redis:
     image: redis:alpine
-    expose:
-      - "6379"
+    ports:
+      # Published to the host (not just `expose`) so a locally-run
+      # `npm run dev` (outside Docker) can also reach it at localhost:6379 —
+      # useful for iterating on rate-limit/caching code with hot reload
+      # while still using the Dockerized Redis.
+      - "6379:6379"
     restart: unless-stopped
 
   admin-app:
