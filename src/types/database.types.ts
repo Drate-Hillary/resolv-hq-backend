@@ -228,6 +228,22 @@ export interface Database {
         Update: Partial<Database["public"]["Tables"]["ai_messages"]["Insert"]>;
         Relationships: [];
       };
+      knowledge_categories: {
+        Row: {
+          id: string;
+          name: string;
+          description: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          name: string;
+          description?: string | null;
+          created_at?: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["knowledge_categories"]["Insert"]>;
+        Relationships: [];
+      };
       knowledge_documents: {
         Row: {
           id: string;
@@ -236,6 +252,7 @@ export interface Database {
           file_url: string | null;
           file_type: string | null;
           status: KnowledgeStatus;
+          category_id: string | null;
           uploaded_by: string | null;
           created_at: string;
           updated_at: string;
@@ -247,6 +264,7 @@ export interface Database {
           file_url?: string | null;
           file_type?: string | null;
           status?: KnowledgeStatus;
+          category_id?: string | null;
           uploaded_by?: string | null;
           created_at?: string;
           updated_at?: string;
@@ -453,6 +471,7 @@ export type RequestMessageRow = Database["public"]["Tables"]["request_messages"]
 export type RequestStatusHistoryRow = Database["public"]["Tables"]["request_status_history"]["Row"];
 export type AiConversationRow = Database["public"]["Tables"]["ai_conversations"]["Row"];
 export type AiMessageRow = Database["public"]["Tables"]["ai_messages"]["Row"];
+export type KnowledgeCategoryRow = Database["public"]["Tables"]["knowledge_categories"]["Row"];
 export type KnowledgeDocumentRow = Database["public"]["Tables"]["knowledge_documents"]["Row"];
 export type KnowledgeChunkRow = Database["public"]["Tables"]["knowledge_chunks"]["Row"];
 export type CustomerMemoryRow = Database["public"]["Tables"]["customer_memory"]["Row"];

@@ -2,6 +2,7 @@ import cors from "cors";
 import express from "express";
 import { requireAuth } from "./lib/auth.js";
 import { errorHandler } from "./middleware/error-handler.js";
+import { rateLimit } from "./middleware/rate-limit.js";
 
 import meRouter from "./routes/me.js";
 import requestsRouter from "./routes/requests.js";
@@ -13,6 +14,7 @@ import aiRouter from "./routes/ai.js";
 
 import adminDashboardRouter from "./routes/admin/dashboard.js";
 import adminKnowledgeRouter from "./routes/admin/knowledge.js";
+import adminKnowledgeCategoriesRouter from "./routes/admin/knowledge-categories.js";
 import adminToolsRouter from "./routes/admin/tools.js";
 import adminTracesRouter from "./routes/admin/traces.js";
 import adminAgentRunsRouter from "./routes/admin/agent-runs.js";
@@ -36,17 +38,23 @@ export function createApp() {
   // Every route below requires a verified Supabase session.
   app.use(requireAuth);
 
+  // General ceiling for every authenticated route.
+  app.use(rateLimit({ keyPrefix: "api", max: 300, windowMs: 5 * 60 * 1000 }));
+
   app.use("/me", meRouter);
   app.use("/requests", requestsRouter);
   app.use("/notifications", notificationsRouter);
   app.use("/categories", categoriesRouter);
   // memory-facts: the customer's own customer_memory rows.
   app.use("/memory-facts", memoryRouter);
-  app.use("/chat", chatRouter);
+  // Tighter limit here specifically: this is the route that calls the LLM
+  // gateway, so it's the one actually exposed to provider rate limits/cost.
+  app.use("/chat", rateLimit({ keyPrefix: "chat", max: 20, windowMs: 60 * 1000 }), chatRouter);
   app.use("/ai", aiRouter);
 
   app.use("/admin/dashboard", adminDashboardRouter);
   app.use("/admin/knowledge", adminKnowledgeRouter);
+  app.use("/admin/knowledge-categories", adminKnowledgeCategoriesRouter);
   app.use("/admin/tools", adminToolsRouter);
   app.use("/admin/traces", adminTracesRouter);
   app.use("/admin/agent-runs", adminAgentRunsRouter);
