@@ -1,9 +1,16 @@
 import type { ErrorRequestHandler, NextFunction, Request, RequestHandler, Response } from "express";
+import { MulterError } from "multer";
 import { HttpError } from "../lib/errors.js";
 
 export const errorHandler: ErrorRequestHandler = (err, _req, res, _next) => {
   if (err instanceof HttpError) {
     res.status(err.status).json({ error: err.message });
+    return;
+  }
+
+  if (err instanceof MulterError) {
+    const message = err.code === "LIMIT_FILE_SIZE" ? "File is too large" : err.message;
+    res.status(400).json({ error: message });
     return;
   }
 

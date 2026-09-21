@@ -14,6 +14,7 @@ import aiRouter from "./routes/ai.js";
 
 import adminDashboardRouter from "./routes/admin/dashboard.js";
 import adminKnowledgeRouter from "./routes/admin/knowledge.js";
+import adminKnowledgeCategoriesRouter from "./routes/admin/knowledge-categories.js";
 import adminToolsRouter from "./routes/admin/tools.js";
 import adminTracesRouter from "./routes/admin/traces.js";
 import adminAgentRunsRouter from "./routes/admin/agent-runs.js";
@@ -53,6 +54,7 @@ export function createApp() {
 
   app.use("/admin/dashboard", adminDashboardRouter);
   app.use("/admin/knowledge", adminKnowledgeRouter);
+  app.use("/admin/knowledge-categories", adminKnowledgeCategoriesRouter);
   app.use("/admin/tools", adminToolsRouter);
   app.use("/admin/traces", adminTracesRouter);
   app.use("/admin/agent-runs", adminAgentRunsRouter);
