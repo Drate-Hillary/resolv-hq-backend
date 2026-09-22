@@ -8,6 +8,7 @@
 // Abstraction Layer (lib/llm/gateway.ts) first and only drops back to
 // answerQuestion() if no provider is registered/active or every one fails —
 // so the chat keeps working in dev with zero keys configured.
+import { detectBoundaryViolation } from "./ai-boundary.js";
 import { completeWithFallback, GatewayUnavailableError } from "./llm/gateway.js";
 import type { LlmMessage } from "./llm/types.js";
 import { buildSystemPrompt } from "./prompts/system-prompt.js";
@@ -136,14 +137,26 @@ export async function generateAssistantReply(
     ];
 
     const result = await completeWithFallback(messages);
+
+    // Structural backstop: the prompt (lib/prompts/system-prompt.ts, rule 2)
+    // already tells the model never to claim a fabricated action, but that's
+    // an instruction, not a guarantee — this catches it independent of
+    // whether the model complied.
+    const violation = await detectBoundaryViolation(result.content);
+    if (violation) {
+      console.warn(
+        `AI Boundary Matrix violation blocked (${violation.category}): "${violation.matchedText}" — original response discarded.`,
+      );
+    }
+
     return {
-      text: result.content,
+      text: violation ? violation.fallbackMessage : result.content,
       sources: knowledge.slice(0, 3).map((d) => ({ id: d.id, title: d.title })),
       suggestions: [],
       steps: [
         ...DEFAULT_STEPS.slice(0, 2),
         result.cached ? "Found a cached answer" : `Calling ${result.providerName} (${result.model})`,
-        "Preparing your response",
+        violation ? "Blocked a boundary-matrix violation" : "Preparing your response",
       ],
     };
   } catch (err) {
