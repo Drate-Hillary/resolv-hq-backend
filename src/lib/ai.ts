@@ -9,6 +9,7 @@
 // answerQuestion() if no provider is registered/active or every one fails —
 // so the chat keeps working in dev with zero keys configured.
 import { detectBoundaryViolation } from "./ai-boundary.js";
+import { checkForClarification } from "./clarification.js";
 import { completeWithFallback, GatewayUnavailableError } from "./llm/gateway.js";
 import type { LlmMessage } from "./llm/types.js";
 import { buildSystemPrompt } from "./prompts/system-prompt.js";
@@ -112,12 +113,40 @@ export function answerQuestion(
  * deterministic answerQuestion() if no provider is configured or every
  * provider call fails.
  */
+function bestKnowledgeScore(query: string, knowledge: AiKnowledgeInput[]): number {
+  return knowledge.reduce((max, doc) => Math.max(max, scoreArticle(query, `${doc.title} ${doc.content}`)), 0);
+}
+
 export async function generateAssistantReply(
   query: string,
   knowledge: AiKnowledgeInput[],
   activeRequests: AiRequestInput[],
   isStaffCaller = false,
 ): Promise<AiAnswer> {
+  // Clarification Prompting Logic: a deterministic gate, not a prompt
+  // instruction — runs before the LLM (or the keyword fallback) ever sees
+  // the query, so a vague message always gets exactly one targeted
+  // clarifying question instead of a guess, regardless of what a model
+  // would have done with it. Skipped when the query clearly wants a
+  // request-status lookup, which is never ambiguous.
+  const isRequestStatusQuery = /\brequest\b|\bstatus\b/i.test(query) && activeRequests.length > 0;
+  if (!isRequestStatusQuery) {
+    try {
+      const clarification = await checkForClarification(query, bestKnowledgeScore(query, knowledge));
+      if (clarification) {
+        console.warn(`Clarification requested (matched: ${clarification.matchedPattern}) for query: "${query}"`);
+        return {
+          text: clarification.question,
+          sources: [],
+          suggestions: [],
+          steps: [DEFAULT_STEPS[0], "This needs a bit more detail before I can help"],
+        };
+      }
+    } catch (err) {
+      console.error("Clarification check failed, continuing without it:", err);
+    }
+  }
+
   try {
     const knowledgeContext = knowledge
       .slice(0, 5)

@@ -21,6 +21,7 @@ import adminAgentRunsRouter from "./routes/admin/agent-runs.js";
 import adminApprovalsRouter from "./routes/admin/approvals.js";
 import adminAgentProvidersRouter from "./routes/admin/agent-providers.js";
 import adminBoundaryRulesRouter from "./routes/admin/boundary-rules.js";
+import adminClarificationTriggersRouter from "./routes/admin/clarification-triggers.js";
 
 const allowedOrigins = (process.env.ALLOWED_ORIGINS ?? "")
   .split(",")
@@ -62,6 +63,7 @@ export function createApp() {
   app.use("/admin/approvals", adminApprovalsRouter);
   app.use("/admin/agent-providers", adminAgentProvidersRouter);
   app.use("/admin/boundary-rules", adminBoundaryRulesRouter);
+  app.use("/admin/clarification-triggers", adminClarificationTriggersRouter);
 
   app.use(errorHandler);
 
