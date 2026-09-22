@@ -26,6 +26,15 @@ export interface AiRequestInput {
   status: string;
 }
 
+export interface AiAccountInput {
+  role: string;
+  status: string;
+  organizationName: string | null;
+  city: string | null;
+  country: string;
+  memberSince: string;
+}
+
 export interface AiAnswer {
   text: string;
   sources: { id: string; title: string }[];
@@ -121,6 +130,7 @@ export async function generateAssistantReply(
   query: string,
   knowledge: AiKnowledgeInput[],
   activeRequests: AiRequestInput[],
+  account: AiAccountInput,
   isStaffCaller = false,
 ): Promise<AiAnswer> {
   // Clarification Prompting Logic: a deterministic gate, not a prompt
@@ -162,7 +172,7 @@ export async function generateAssistantReply(
     // ReAct Loop Core Implementation (lib/react-agent.ts): Sense (query +
     // context, above) -> Plan -> Act -> Observe, repeated until the model
     // responds with a final answer instead of another tool call.
-    const result = await runReActLoop(systemPrompt, query, knowledge, activeRequests);
+    const result = await runReActLoop(systemPrompt, query, knowledge, activeRequests, account);
 
     // Structural backstop: the prompt (lib/prompts/system-prompt.ts, rule 2)
     // already tells the model never to claim a fabricated action, but that's
@@ -207,32 +217,8 @@ export async function generateAssistantReply(
   }
 }
 
-const CATEGORY_KEYWORDS: Record<string, string[]> = {
-  Billing: ["invoice", "charge", "payment", "bill", "refund", "price"],
-  "Account support": ["password", "login", "account", "email", "profile", "access"],
-  "Service assistance": ["sync", "integration", "error", "bug", "broken", "not working", "issue"],
-  "Product question": ["how", "what", "can i", "does", "feature"],
-};
-
-export function classifyRequest(description: string): {
-  category: string;
-  priority: "low" | "normal" | "high";
-} {
-  const lower = description.toLowerCase();
-  let best = "Service assistance";
-  let bestScore = 0;
-  for (const [category, words] of Object.entries(CATEGORY_KEYWORDS)) {
-    const score = words.reduce((acc, w) => acc + (lower.includes(w) ? 1 : 0), 0);
-    if (score > bestScore) {
-      bestScore = score;
-      best = category;
-    }
-  }
-  const urgentWords = ["urgent", "asap", "immediately", "broken", "down", "can't", "cannot"];
-  const priority: "low" | "normal" | "high" = urgentWords.some((w) => lower.includes(w))
-    ? "high"
-    : description.length < 40
-      ? "low"
-      : "normal";
-  return { category: best, priority };
-}
+// Re-exported for existing callers (routes/ai.ts, routes/requests.ts) — the
+// implementation moved to lib/classify.ts so lib/agent-tools.ts (the
+// draft_escalation_ticket tool) can reuse it without a circular import
+// through ai.ts -> react-agent.ts -> agent-tools.ts -> ai.ts.
+export { classifyRequest } from "./classify.js";

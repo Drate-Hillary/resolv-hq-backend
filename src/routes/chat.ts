@@ -1,7 +1,7 @@
 import { Router, type Request, type Response } from "express";
-import { generateAssistantReply, type AiKnowledgeInput, type AiRequestInput } from "../lib/ai.js";
+import { generateAssistantReply, type AiAccountInput, type AiKnowledgeInput, type AiRequestInput } from "../lib/ai.js";
 import { badRequest } from "../lib/errors.js";
-import { mapChatMessageRow, mapConversationRow } from "../lib/mappers.js";
+import { formatMemberSince, mapChatMessageRow, mapConversationRow } from "../lib/mappers.js";
 import { assertConversationAccess } from "../lib/ownership.js";
 import { finalStatusIds, loadStatuses } from "../lib/statuses.js";
 import { db } from "../lib/supabase.js";
@@ -11,6 +11,28 @@ const router = Router();
 
 function isStaff(role: string): boolean {
   return role === "admin" || role === "agent";
+}
+
+/** Backs the account_status_lookup tool (lib/agent-tools.ts) — always the
+ * caller's own account, resolved server-side from req.user, never
+ * client-supplied. */
+async function loadAccountInput(userId: string, role: string): Promise<AiAccountInput> {
+  const { data: profile } = await db.from("profiles").select("*").eq("id", userId).single();
+
+  let customerProfile: { organization_name: string | null; city: string | null; country: string } | null = null;
+  if (role === "customer") {
+    const { data } = await db.from("customer_profiles").select("*").eq("user_id", userId).single();
+    customerProfile = data;
+  }
+
+  return {
+    role,
+    status: profile?.status ?? "active",
+    organizationName: customerProfile?.organization_name ?? null,
+    city: customerProfile?.city ?? null,
+    country: customerProfile?.country ?? "Uganda",
+    memberSince: profile ? formatMemberSince(profile.created_at) : "unknown",
+  };
 }
 
 /**
@@ -97,11 +119,12 @@ router.post(
     const statusNameById = new Map(statuses.map((s) => [s.id, s.name]));
     const finalIds = await finalStatusIds();
 
-    const [{ data: docs }, { data: requests }] = await Promise.all([
+    const [{ data: docs }, { data: requests }, account] = await Promise.all([
       db.from("knowledge_documents").select("*").eq("status", "published"),
       isStaff(user.role)
         ? db.from("requests").select("*").not("status_id", "in", `(${finalIds.join(",") || "null"})`)
         : db.from("requests").select("*").eq("customer_id", user.id),
+      loadAccountInput(user.id, user.role),
     ]);
 
     const knowledgeInputs: AiKnowledgeInput[] = (docs ?? []).map((d) => ({
@@ -115,7 +138,7 @@ router.post(
       status: r.status_id ? statusNameById.get(r.status_id) ?? "unknown" : "unknown",
     }));
 
-    const answer = await generateAssistantReply(content, knowledgeInputs, requestInputs, isStaff(user.role));
+    const answer = await generateAssistantReply(content, knowledgeInputs, requestInputs, account, isStaff(user.role));
 
     const { data: assistantRow, error: assistantError } = await db
       .from("ai_messages")
