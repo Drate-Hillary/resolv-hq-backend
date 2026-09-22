@@ -420,6 +420,28 @@ export interface Database {
         Update: Partial<Database["public"]["Tables"]["notifications"]["Insert"]>;
         Relationships: [];
       };
+      boundary_rules: {
+        Row: {
+          id: string;
+          category: string;
+          pattern: string;
+          fallback_message: string;
+          is_active: boolean;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          category: string;
+          pattern: string;
+          fallback_message: string;
+          is_active?: boolean;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["boundary_rules"]["Insert"]>;
+        Relationships: [];
+      };
       agent_providers: {
         Row: {
           id: string;
@@ -480,3 +502,4 @@ export type AgentRunRow = Database["public"]["Tables"]["agent_runs"]["Row"];
 export type AgentApprovalRow = Database["public"]["Tables"]["agent_approvals"]["Row"];
 export type NotificationRow = Database["public"]["Tables"]["notifications"]["Row"];
 export type AgentProviderRow = Database["public"]["Tables"]["agent_providers"]["Row"];
+export type BoundaryRuleRow = Database["public"]["Tables"]["boundary_rules"]["Row"];
