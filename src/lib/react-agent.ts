@@ -16,7 +16,7 @@
 //            in which case the loop stops and returns a safe fallback
 //            rather than looping forever.
 import { AGENT_TOOL_DEFINITIONS, executeAgentTool } from "./agent-tools.js";
-import type { AiKnowledgeInput, AiRequestInput } from "./ai.js";
+import type { AiAccountInput, AiKnowledgeInput, AiRequestInput } from "./ai.js";
 import { completeWithFallback } from "./llm/gateway.js";
 import type { LlmMessage } from "./llm/types.js";
 
@@ -47,6 +47,7 @@ export async function runReActLoop(
   query: string,
   knowledge: AiKnowledgeInput[],
   activeRequests: AiRequestInput[],
+  account: AiAccountInput,
 ): Promise<ReActResult> {
   const messages: LlmMessage[] = [
     { role: "system", content: systemPrompt },
@@ -63,7 +64,7 @@ export async function runReActLoop(
 
       for (const call of result.toolCalls) {
         trace.push({ phase: "act", detail: `${call.name}(${JSON.stringify(call.arguments)})` });
-        const observation = executeAgentTool(call.name, call.arguments, { knowledge, activeRequests });
+        const observation = executeAgentTool(call.name, call.arguments, { knowledge, activeRequests, account });
         trace.push({ phase: "observe", detail: observation.slice(0, 200) });
         messages.push({ role: "tool", toolCallId: call.id, content: observation });
       }
