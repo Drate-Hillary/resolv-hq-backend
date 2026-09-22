@@ -10,9 +10,9 @@
 // so the chat keeps working in dev with zero keys configured.
 import { detectBoundaryViolation } from "./ai-boundary.js";
 import { checkForClarification } from "./clarification.js";
-import { completeWithFallback, GatewayUnavailableError } from "./llm/gateway.js";
-import type { LlmMessage } from "./llm/types.js";
+import { GatewayUnavailableError } from "./llm/gateway.js";
 import { buildSystemPrompt } from "./prompts/system-prompt.js";
+import { runReActLoop } from "./react-agent.js";
 
 export interface AiKnowledgeInput {
   id: string;
@@ -157,15 +157,12 @@ export async function generateAssistantReply(
       .map((r) => `- "${r.title}": ${r.status}`)
       .join("\n");
 
-    const messages: LlmMessage[] = [
-      {
-        role: "system",
-        content: buildSystemPrompt({ knowledgeContext, requestContext, isStaffCaller }),
-      },
-      { role: "user", content: query },
-    ];
+    const systemPrompt = buildSystemPrompt({ knowledgeContext, requestContext, isStaffCaller });
 
-    const result = await completeWithFallback(messages);
+    // ReAct Loop Core Implementation (lib/react-agent.ts): Sense (query +
+    // context, above) -> Plan -> Act -> Observe, repeated until the model
+    // responds with a final answer instead of another tool call.
+    const result = await runReActLoop(systemPrompt, query, knowledge, activeRequests);
 
     // Structural backstop: the prompt (lib/prompts/system-prompt.ts, rule 2)
     // already tells the model never to claim a fabricated action, but that's
@@ -178,15 +175,29 @@ export async function generateAssistantReply(
       );
     }
 
+    const traceSteps = result.trace.map((step) => {
+      switch (step.phase) {
+        case "plan":
+          return `Planning: ${step.detail}`;
+        case "act":
+          return `Acting: ${step.detail}`;
+        case "observe":
+          return `Observed: ${step.detail}`;
+        case "respond":
+          return step.detail;
+      }
+    });
+
     return {
       text: violation ? violation.fallbackMessage : result.content,
       sources: knowledge.slice(0, 3).map((d) => ({ id: d.id, title: d.title })),
       suggestions: [],
       steps: [
-        ...DEFAULT_STEPS.slice(0, 2),
+        DEFAULT_STEPS[0],
         result.cached ? "Found a cached answer" : `Calling ${result.providerName} (${result.model})`,
-        violation ? "Blocked a boundary-matrix violation" : "Preparing your response",
-      ],
+        ...traceSteps,
+        violation ? "Blocked a boundary-matrix violation" : undefined,
+      ].filter((s): s is string => Boolean(s)),
     };
   } catch (err) {
     if (!(err instanceof GatewayUnavailableError)) {
