@@ -442,6 +442,26 @@ export interface Database {
         Update: Partial<Database["public"]["Tables"]["boundary_rules"]["Insert"]>;
         Relationships: [];
       };
+      clarification_triggers: {
+        Row: {
+          id: string;
+          pattern: string | null;
+          question: string;
+          is_fallback: boolean;
+          is_active: boolean;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          pattern?: string | null;
+          question: string;
+          is_fallback?: boolean;
+          is_active?: boolean;
+          created_at?: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["clarification_triggers"]["Insert"]>;
+        Relationships: [];
+      };
       agent_providers: {
         Row: {
           id: string;
@@ -503,3 +523,4 @@ export type AgentApprovalRow = Database["public"]["Tables"]["agent_approvals"]["
 export type NotificationRow = Database["public"]["Tables"]["notifications"]["Row"];
 export type AgentProviderRow = Database["public"]["Tables"]["agent_providers"]["Row"];
 export type BoundaryRuleRow = Database["public"]["Tables"]["boundary_rules"]["Row"];
+export type ClarificationTriggerRow = Database["public"]["Tables"]["clarification_triggers"]["Row"];
