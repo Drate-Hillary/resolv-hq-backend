@@ -215,6 +215,8 @@ export interface Database {
           sender_type: AiSenderType;
           content: string;
           model: string | null;
+          /** See migrations/0009_ai_messages_feedback.sql. */
+          feedback: "up" | "down" | null;
           created_at: string;
         };
         Insert: {
@@ -223,6 +225,7 @@ export interface Database {
           sender_type: AiSenderType;
           content: string;
           model?: string | null;
+          feedback?: "up" | "down" | null;
           created_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["ai_messages"]["Insert"]>;

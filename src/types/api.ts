@@ -77,6 +77,7 @@ export interface ChatMessageOut {
   conversationId: string;
   senderType: "customer" | "assistant" | "system";
   content: string;
+  feedback: "up" | "down" | null;
   createdAt: string;
 }
 
@@ -86,4 +87,16 @@ export interface ChatConversationOut {
   status: string;
   startedAt: string;
   messageCount: number;
+}
+
+/** Customer-facing view of a published knowledge_documents row. */
+export interface HelpArticleOut {
+  id: string;
+  slug: string;
+  title: string;
+  category: string;
+  summary: string;
+  body: string[];
+  source: string;
+  readMinutes: number;
 }

@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import { generateAssistantReply, type AiAccountInput, type AiKnowledgeInput, type AiRequestInput } from "../lib/ai.js";
-import { badRequest } from "../lib/errors.js";
+import { badRequest, notFound } from "../lib/errors.js";
 import { formatMemberSince, mapChatMessageRow, mapConversationRow } from "../lib/mappers.js";
 import { assertConversationAccess } from "../lib/ownership.js";
 import { finalStatusIds, loadStatuses } from "../lib/statuses.js";
@@ -157,6 +157,37 @@ router.post(
       suggestions: answer.suggestions,
       steps: answer.steps,
     });
+  }),
+);
+
+/** Scoped through the message's conversation, not just its id, so a
+ * customer can't rate another customer's message by guessing an id. */
+router.patch(
+  "/messages/:id/feedback",
+  asyncRoute(async (req: Request, res: Response) => {
+    const { feedback } = req.body as { feedback?: "up" | "down" | null };
+    if (feedback !== "up" && feedback !== "down" && feedback !== null) {
+      throw badRequest('feedback must be "up", "down", or null');
+    }
+
+    const { data: message, error: messageError } = await db
+      .from("ai_messages")
+      .select("id, conversation_id")
+      .eq("id", req.params.id)
+      .single();
+    if (messageError || !message) throw notFound("Message not found");
+
+    await assertConversationAccess(message.conversation_id, req.user!);
+
+    const { data, error } = await db
+      .from("ai_messages")
+      .update({ feedback })
+      .eq("id", req.params.id)
+      .select()
+      .single();
+    if (error || !data) throw error ?? new Error("Failed to update feedback");
+
+    res.json(mapChatMessageRow(data));
   }),
 );
 

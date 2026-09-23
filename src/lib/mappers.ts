@@ -4,6 +4,7 @@ import type {
   AiConversationRow,
   AiMessageRow,
   CustomerMemoryRow,
+  KnowledgeDocumentRow,
   NotificationRow,
   RequestCategory,
   RequestPriority as DbRequestPriority,
@@ -16,6 +17,7 @@ import type {
   AppRequestPriority,
   ChatConversationOut,
   ChatMessageOut,
+  HelpArticleOut,
   MemoryFact,
   RequestCategoryOption,
   RequestMessage,
@@ -137,10 +139,47 @@ export function mapChatMessageRow(row: AiMessageRow): ChatMessageOut {
     conversationId: row.conversation_id,
     senderType: row.sender_type,
     content: row.content,
+    feedback: row.feedback,
     createdAt: row.created_at,
   };
 }
 
 export function mapConversationRow(row: AiConversationRow, messageCount: number): ChatConversationOut {
   return { id: row.id, title: row.title, status: row.status, startedAt: row.created_at, messageCount };
+}
+
+/** `knowledge_documents` has no slug/summary/body/readMinutes columns — this app shape is
+ * derived entirely from `title` and `content` at the boundary. */
+export function mapKnowledgeDocumentToHelpArticle(
+  row: KnowledgeDocumentRow,
+  categoryName: string | null,
+): HelpArticleOut {
+  const flat = row.content?.replace(/\s+/g, " ").trim() ?? "";
+  const words = flat.length > 0 ? flat.split(" ").length : 0;
+
+  return {
+    id: row.id,
+    slug: slugifyTitle(row.title, row.id),
+    title: row.title,
+    category: categoryName ?? "General",
+    summary: flat.length > 140 ? `${flat.slice(0, 137)}...` : flat || "Open this article for the full details.",
+    body:
+      row.content
+        ?.split(/\n\s*\n/)
+        .map((p) => p.trim())
+        .filter(Boolean) ?? [
+        "This article's full content is attached as a file — ask the AI assistant if you have questions.",
+      ],
+    source: "Resolv HQ Knowledge Base",
+    readMinutes: Math.max(1, Math.round(words / 200)),
+  };
+}
+
+function slugifyTitle(title: string, id: string): string {
+  const base = title
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)/g, "");
+  return base ? `${base}-${id.slice(0, 8)}` : id;
 }
