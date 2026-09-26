@@ -19,6 +19,11 @@ export interface LlmToolCall {
   id: string;
   name: string;
   arguments: Record<string, unknown>;
+  /** Set when the provider's raw tool-call payload wasn't a usable JSON
+   * object (see llm/tool-arguments.ts) — `arguments` is `{}` in that case
+   * and the caller (lib/react-agent.ts) should report the failure back to
+   * the model rather than execute the tool with guessed-at arguments. */
+  argumentsParseError?: string;
 }
 
 export type LlmMessage =
