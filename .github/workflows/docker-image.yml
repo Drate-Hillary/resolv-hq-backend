@@ -29,6 +29,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Set lowercase image repository
+        # GHCR (like all Docker registries) requires a lowercase repository
+        # name, but github.repository preserves this repo's actual case
+        # (Drate-Hillary/resolv-hq-backend) — lowercase it here rather than
+        # inline in the tag, since build-push-action rejects a mixed-case
+        # tag outright.
+        run: echo "IMAGE_REPOSITORY=${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
@@ -36,7 +44,7 @@ jobs:
           # Only push to the registry if it's a direct push to Dev (not a PR)
           push: ${{ github.event_name != 'pull_request' }}
           # Dynamically tags it using your github username and repo name
-          tags: ghcr.io/${{ github.repository }}:dev
+          tags: ghcr.io/${{ env.IMAGE_REPOSITORY }}:dev
           # Enables caching to significantly speed up future builds
           cache-from: type=gha
           cache-to: type=gha,mode=max
