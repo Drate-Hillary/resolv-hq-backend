@@ -63,6 +63,15 @@ export async function runReActLoop(
       messages.push({ role: "assistant", content: result.content, toolCalls: result.toolCalls });
 
       for (const call of result.toolCalls) {
+        if (call.argumentsParseError) {
+          const observation = `Your call to "${call.name}" could not be executed: its arguments were not valid (${call.argumentsParseError}). Retry with a corrected JSON arguments object.`;
+          trace.push({ phase: "act", detail: `${call.name}: rejected — ${call.argumentsParseError}` });
+          console.error(`ReAct loop: rejected malformed tool-call arguments for "${call.name}": ${call.argumentsParseError}`);
+          trace.push({ phase: "observe", detail: observation });
+          messages.push({ role: "tool", toolCallId: call.id, content: observation });
+          continue;
+        }
+
         trace.push({ phase: "act", detail: `${call.name}(${JSON.stringify(call.arguments)})` });
         const observation = executeAgentTool(call.name, call.arguments, { knowledge, activeRequests, account });
         trace.push({ phase: "observe", detail: observation.slice(0, 200) });

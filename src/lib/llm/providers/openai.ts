@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { parseToolArguments } from "../tool-arguments.js";
 import type { LlmClient, LlmCompletionResult, LlmMessage, LlmToolCall, LlmToolDefinition } from "../types.js";
 
 const DEFAULT_MODEL = "gpt-4o-mini";
@@ -55,25 +56,15 @@ export class OpenAiClient implements LlmClient {
     if (message.tool_calls && message.tool_calls.length > 0) {
       const toolCalls: LlmToolCall[] = message.tool_calls
         .filter((call): call is typeof call & { type: "function" } => call.type === "function")
-        .map((call) => ({
-          id: call.id,
-          name: call.function.name,
-          arguments: safeParseArguments(call.function.arguments),
-        }));
+        .map((call) => {
+          const { arguments: args, parseError } = parseToolArguments(call.function.arguments);
+          return { id: call.id, name: call.function.name, arguments: args, argumentsParseError: parseError };
+        });
       return { content: null, model: this.model, toolCalls };
     }
 
     const content = message.content?.trim();
     if (!content) throw new Error("OpenAI returned no content");
     return { content, model: this.model };
-  }
-}
-
-function safeParseArguments(raw: string): Record<string, unknown> {
-  try {
-    const parsed = JSON.parse(raw);
-    return typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : {};
-  } catch {
-    return {};
   }
 }

@@ -1,7 +1,8 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { normalizeToolArguments } from "../tool-arguments.js";
 import type { LlmClient, LlmCompletionResult, LlmMessage, LlmToolCall, LlmToolDefinition } from "../types.js";
 
-const DEFAULT_MODEL = "claude-sonnet-4-5";
+const DEFAULT_MODEL = "claude-sonnet-5";
 
 type AnthropicMessage = Anthropic.Messages.MessageParam;
 
@@ -80,11 +81,10 @@ export class AnthropicClient implements LlmClient {
 
     const toolUseBlocks = res.content.filter((b): b is Anthropic.Messages.ToolUseBlock => b.type === "tool_use");
     if (toolUseBlocks.length > 0) {
-      const toolCalls: LlmToolCall[] = toolUseBlocks.map((b) => ({
-        id: b.id,
-        name: b.name,
-        arguments: (b.input ?? {}) as Record<string, unknown>,
-      }));
+      const toolCalls: LlmToolCall[] = toolUseBlocks.map((b) => {
+        const { arguments: args, parseError } = normalizeToolArguments(b.input);
+        return { id: b.id, name: b.name, arguments: args, argumentsParseError: parseError };
+      });
       const textBlock = res.content.find((b) => b.type === "text");
       return { content: textBlock?.type === "text" ? textBlock.text : null, model: this.model, toolCalls };
     }
