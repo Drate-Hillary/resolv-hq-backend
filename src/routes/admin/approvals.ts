@@ -9,7 +9,8 @@ import { Router } from "express";
 import { requireRole } from "../../lib/auth.js";
 import { decideApproval } from "../../lib/approval-decisions.js";
 import { badRequest, notFound } from "../../lib/errors.js";
-import { db } from "../../lib/supabase.js";
+import { isNotFound } from "../../lib/prisma-errors.js";
+import { prisma } from "../../lib/prisma.js";
 import { asyncRoute } from "../../middleware/error-handler.js";
 import type { ApprovalStatus, RequestPriority } from "../../types/database.types.js";
 
@@ -58,14 +59,11 @@ router.get(
   "/",
   requireRole("staff"),
   asyncRoute(async (_req, res) => {
-    const { data: approvals, error } = await db
-      .from("agent_approvals")
-      .select("id, agent_run_id, requested_action, reason, status, requested_at")
-      .order("requested_at", { ascending: false })
-      .limit(50);
-    if (error) throw error;
-
-    const rows = approvals ?? [];
+    const rows = await prisma.agent_approvals.findMany({
+      select: { id: true, agent_run_id: true, requested_action: true, reason: true, status: true, requested_at: true },
+      orderBy: { requested_at: "desc" },
+      take: 50,
+    });
     const runIds = Array.from(new Set(rows.map((r) => r.agent_run_id)));
 
     const requestByRunId = new Map<string, string | null>();
@@ -76,23 +74,29 @@ router.get(
     const namesById = new Map<string, string>();
 
     if (runIds.length > 0) {
-      const { data: runs } = await db.from("agent_runs").select("id, request_id").in("id", runIds);
-      for (const r of runs ?? []) requestByRunId.set(r.id, r.request_id);
+      const runs = await prisma.agent_runs.findMany({
+        where: { id: { in: runIds } },
+        select: { id: true, request_id: true },
+      });
+      for (const r of runs) requestByRunId.set(r.id, r.request_id);
 
       const requestIds = Array.from(
-        new Set((runs ?? []).map((r) => r.request_id).filter((id): id is string => Boolean(id))),
+        new Set(runs.map((r) => r.request_id).filter((id): id is string => Boolean(id))),
       );
       if (requestIds.length > 0) {
-        const { data: requests } = await db
-          .from("requests")
-          .select("id, title, priority, customer_id, assigned_agent_id")
-          .in("id", requestIds);
-        for (const r of requests ?? []) requestsById.set(r.id, r);
+        const requests = (await prisma.requests.findMany({
+          where: { id: { in: requestIds } },
+          select: { id: true, title: true, priority: true, customer_id: true, assigned_agent_id: true },
+        })) as { id: string; title: string; priority: RequestPriority; customer_id: string; assigned_agent_id: string | null }[];
+        for (const r of requests) requestsById.set(r.id, r);
 
-        const customerIds = Array.from(new Set((requests ?? []).map((r) => r.customer_id)));
+        const customerIds = Array.from(new Set(requests.map((r) => r.customer_id)));
         if (customerIds.length > 0) {
-          const { data: profiles } = await db.from("profiles").select("id, first_name, last_name").in("id", customerIds);
-          for (const p of profiles ?? []) {
+          const profiles = await prisma.profiles.findMany({
+            where: { id: { in: customerIds } },
+            select: { id: true, first_name: true, last_name: true },
+          });
+          for (const p of profiles) {
             namesById.set(p.id, [p.first_name, p.last_name].filter(Boolean).join(" ") || "Unknown customer");
           }
         }
@@ -108,8 +112,8 @@ router.get(
         customerName: request ? namesById.get(request.customer_id) ?? "Unknown customer" : "Unknown customer",
         subject: request?.title ?? row.requested_action,
         priority: request?.priority ?? "medium",
-        waitingSince: formatWaiting(row.requested_at),
-        status: row.status,
+        waitingSince: formatWaiting(row.requested_at as unknown as string),
+        status: row.status as ApprovalStatus,
         assignedAgentId: request?.assigned_agent_id ?? null,
       };
     });
@@ -124,29 +128,31 @@ router.get(
   "/:id",
   requireRole("staff"),
   asyncRoute(async (req, res) => {
-    const { data: approval, error } = await db
-      .from("agent_approvals")
-      .select("id, agent_run_id, requested_action, reason, status, review_comment")
-      .eq("id", req.params.id)
-      .single();
-    if (error || !approval) throw notFound("Approval not found");
+    const approval = await prisma.agent_approvals.findUnique({
+      where: { id: req.params.id },
+      select: { id: true, agent_run_id: true, requested_action: true, reason: true, status: true, review_comment: true },
+    });
+    if (!approval) throw notFound("Approval not found");
 
-    const { data: run } = await db.from("agent_runs").select("request_id").eq("id", approval.agent_run_id).single();
+    const run = await prisma.agent_runs.findUnique({
+      where: { id: approval.agent_run_id },
+      select: { request_id: true },
+    });
     const requestId = run?.request_id ?? null;
 
     let transcript: TranscriptEntry[] = [];
     if (requestId) {
-      const { data: messages } = await db
-        .from("request_messages")
-        .select("id, sender_type, message, created_at")
-        .eq("request_id", requestId)
-        .order("created_at", { ascending: true });
+      const messages = await prisma.request_messages.findMany({
+        where: { request_id: requestId },
+        select: { id: true, sender_type: true, message: true, created_at: true },
+        orderBy: { created_at: "asc" },
+      });
 
-      transcript = (messages ?? []).map((m) => ({
+      transcript = messages.map((m) => ({
         id: m.id,
         role: m.sender_type === "customer" ? "user" : "agent",
         content: m.message,
-        timestamp: new Date(m.created_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
+        timestamp: new Date(m.created_at ?? 0).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
       }));
     }
 
@@ -155,7 +161,7 @@ router.get(
       requestId,
       requestedAction: approval.requested_action,
       reason: approval.reason,
-      status: approval.status,
+      status: approval.status as ApprovalStatus,
       reviewComment: approval.review_comment,
       transcript,
     };
@@ -189,13 +195,12 @@ router.get(
   "/available-admins",
   requireRole("staff"),
   asyncRoute(async (_req, res) => {
-    const { data: profiles } = await db
-      .from("profiles")
-      .select("id, first_name, last_name")
-      .in("role", ["admin", "agent"])
-      .eq("status", "active");
+    const profiles = await prisma.profiles.findMany({
+      where: { role: { in: ["admin", "agent"] }, status: "active" },
+      select: { id: true, first_name: true, last_name: true },
+    });
     res.json(
-      (profiles ?? []).map((p) => ({
+      profiles.map((p) => ({
         id: p.id,
         name: [p.first_name, p.last_name].filter(Boolean).join(" ") || "Unnamed admin",
       })),
@@ -215,13 +220,16 @@ router.patch(
     const { adminId } = req.body as { adminId?: string | null };
     if (adminId === undefined) throw badRequest("adminId is required");
 
-    const { data, error } = await db
-      .from("requests")
-      .update({ assigned_agent_id: adminId })
-      .eq("id", req.params.id)
-      .select()
-      .single();
-    if (error || !data) throw notFound("Request not found");
+    let data;
+    try {
+      data = await prisma.requests.update({
+        where: { id: req.params.id },
+        data: { assigned_agent_id: adminId },
+      });
+    } catch (err) {
+      if (isNotFound(err)) throw notFound("Request not found");
+      throw err;
+    }
 
     res.json(data);
   }),

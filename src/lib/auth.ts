@@ -1,6 +1,8 @@
 import type { NextFunction, Request, Response } from "express";
-import { authClient, db } from "./supabase.js";
+import { authClient } from "./supabase.js";
 import { unauthorized } from "./errors.js";
+import { prisma } from "./prisma.js";
+import type { UserRole } from "../types/database.types.js";
 
 /**
  * Verifies the caller's Supabase access token (Authorization: Bearer <token>)
@@ -17,14 +19,13 @@ export async function requireAuth(req: Request, _res: Response, next: NextFuncti
     const { data, error } = await authClient.auth.getUser(token);
     if (error || !data.user) throw unauthorized("Invalid or expired token");
 
-    const { data: profile, error: profileError } = await db
-      .from("profiles")
-      .select("role")
-      .eq("id", data.user.id)
-      .single();
-    if (profileError || !profile) throw unauthorized("No profile for this user");
+    const profile = await prisma.profiles.findUnique({
+      where: { id: data.user.id },
+      select: { role: true },
+    });
+    if (!profile) throw unauthorized("No profile for this user");
 
-    req.user = { id: data.user.id, role: profile.role };
+    req.user = { id: data.user.id, role: profile.role as UserRole };
     next();
   } catch (err) {
     next(err);

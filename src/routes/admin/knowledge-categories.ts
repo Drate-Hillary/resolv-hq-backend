@@ -2,7 +2,8 @@ import type { Request, Response } from "express";
 import { Router } from "express";
 import { requireRole } from "../../lib/auth.js";
 import { badRequest, notFound } from "../../lib/errors.js";
-import { db } from "../../lib/supabase.js";
+import { isNotFound, isUniqueViolation } from "../../lib/prisma-errors.js";
+import { prisma } from "../../lib/prisma.js";
 import { asyncRoute } from "../../middleware/error-handler.js";
 
 const router = Router();
@@ -11,9 +12,8 @@ router.use(requireRole("staff"));
 router.get(
   "/",
   asyncRoute(async (_req: Request, res: Response) => {
-    const { data, error } = await db.from("knowledge_categories").select("*").order("name", { ascending: true });
-    if (error) throw error;
-    res.json(data ?? []);
+    const data = await prisma.knowledge_categories.findMany({ orderBy: { name: "asc" } });
+    res.json(data);
   }),
 );
 
@@ -23,12 +23,13 @@ router.post(
     const { name, description = null } = req.body as { name?: string; description?: string | null };
     if (!name?.trim()) throw badRequest("name is required");
 
-    const { data, error } = await db
-      .from("knowledge_categories")
-      .insert({ name: name.trim(), description })
-      .select("*")
-      .single();
-    if (error) throw error.code === "23505" ? badRequest("A category with that name already exists") : error;
+    let data;
+    try {
+      data = await prisma.knowledge_categories.create({ data: { name: name.trim(), description } });
+    } catch (err) {
+      if (isUniqueViolation(err)) throw badRequest("A category with that name already exists");
+      throw err;
+    }
 
     res.json(data);
   }),
@@ -45,13 +46,13 @@ router.patch(
     if (name !== undefined) update.name = name.trim();
     if (description !== undefined) update.description = description;
 
-    const { data, error } = await db
-      .from("knowledge_categories")
-      .update(update)
-      .eq("id", req.params.id)
-      .select("*")
-      .single();
-    if (error || !data) throw notFound("Category not found");
+    let data;
+    try {
+      data = await prisma.knowledge_categories.update({ where: { id: req.params.id }, data: update });
+    } catch (err) {
+      if (isNotFound(err)) throw notFound("Category not found");
+      throw err;
+    }
 
     res.json(data);
   }),
@@ -62,11 +63,7 @@ router.patch(
 router.delete(
   "/:id",
   asyncRoute(async (req: Request, res: Response) => {
-    const { error, count } = await db
-      .from("knowledge_categories")
-      .delete({ count: "exact" })
-      .eq("id", req.params.id);
-    if (error) throw error;
+    const { count } = await prisma.knowledge_categories.deleteMany({ where: { id: req.params.id } });
     if (!count) throw notFound("Category not found");
 
     res.status(204).end();

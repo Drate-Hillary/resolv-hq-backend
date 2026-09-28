@@ -3,7 +3,8 @@
 // gate. Both flows ultimately do the exact same thing to the exact same
 // agent_approvals row, so there is exactly one implementation of that
 // update here.
-import { db } from "./supabase.js";
+import { prisma } from "./prisma.js";
+import { isNotFound } from "./prisma-errors.js";
 import { notFound } from "./errors.js";
 import type { ApprovalStatus } from "../types/database.types.js";
 
@@ -15,18 +16,18 @@ export async function decideApproval(
   user: { id: string },
   note?: string,
 ) {
-  const { data, error } = await db
-    .from("agent_approvals")
-    .update({
-      status: decision,
-      reviewed_by: user.id,
-      reviewed_at: new Date().toISOString(),
-      review_comment: note ?? null,
-    })
-    .eq("id", approvalId)
-    .select()
-    .single();
-  if (error || !data) throw notFound("Approval not found");
-
-  return data;
+  try {
+    return await prisma.agent_approvals.update({
+      where: { id: approvalId },
+      data: {
+        status: decision,
+        reviewed_by: user.id,
+        reviewed_at: new Date(),
+        review_comment: note ?? null,
+      },
+    });
+  } catch (err) {
+    if (isNotFound(err)) throw notFound("Approval not found");
+    throw err;
+  }
 }

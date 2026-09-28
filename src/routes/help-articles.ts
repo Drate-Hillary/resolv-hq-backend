@@ -1,7 +1,8 @@
 import { Router, type Request, type Response } from "express";
 import { mapKnowledgeDocumentToHelpArticle } from "../lib/mappers.js";
-import { db } from "../lib/supabase.js";
+import { prisma } from "../lib/prisma.js";
 import { asyncRoute } from "../middleware/error-handler.js";
+import type { KnowledgeDocumentRow } from "../types/database.types.js";
 
 const router = Router();
 
@@ -13,27 +14,25 @@ const router = Router();
 router.get(
   "/",
   asyncRoute(async (_req: Request, res: Response) => {
-    const { data, error } = await db
-      .from("knowledge_documents")
-      .select("*")
-      .eq("status", "published")
-      .order("created_at", { ascending: false });
-    if (error) throw error;
+    const data = (await prisma.knowledge_documents.findMany({
+      where: { status: "published" },
+      orderBy: { created_at: "desc" },
+    })) as unknown as KnowledgeDocumentRow[];
 
     const categoryIds = Array.from(
-      new Set((data ?? []).map((d) => d.category_id).filter((id): id is string => Boolean(id))),
+      new Set(data.map((d) => d.category_id).filter((id): id is string => Boolean(id))),
     );
     const categoryNameById = new Map<string, string>();
     if (categoryIds.length > 0) {
-      const { data: categories } = await db
-        .from("knowledge_categories")
-        .select("id, name")
-        .in("id", categoryIds);
-      for (const c of categories ?? []) categoryNameById.set(c.id, c.name);
+      const categories = await prisma.knowledge_categories.findMany({
+        where: { id: { in: categoryIds } },
+        select: { id: true, name: true },
+      });
+      for (const c of categories) categoryNameById.set(c.id, c.name);
     }
 
     res.json(
-      (data ?? []).map((row) =>
+      data.map((row) =>
         mapKnowledgeDocumentToHelpArticle(row, row.category_id ? categoryNameById.get(row.category_id) ?? null : null),
       ),
     );

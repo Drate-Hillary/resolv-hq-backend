@@ -2,13 +2,15 @@
 // agent_steps and tool_executions no longer exist as tables — agent_runs
 // itself now carries current_step/tool_name/tool_input/tool_output directly,
 // updated in place as the run advances (see DEMO_RUN_STEPS).
+import { Prisma } from "@prisma/client";
 import { Router } from "express";
 import { requireRole } from "../../lib/auth.js";
 import { badRequest, notFound } from "../../lib/errors.js";
 import { DEMO_MODEL, DEMO_PROMPT_VERSION, DEMO_RUN_STEPS } from "../../lib/demo-run-script.js";
-import { db } from "../../lib/supabase.js";
+import { isNotFound } from "../../lib/prisma-errors.js";
+import { prisma } from "../../lib/prisma.js";
 import { asyncRoute } from "../../middleware/error-handler.js";
-import type { Database, Json, RunStatus } from "../../types/database.types.js";
+import type { Json, RunStatus } from "../../types/database.types.js";
 
 const router = Router();
 
@@ -20,9 +22,8 @@ router.post(
   asyncRoute(async (req, res) => {
     const { conversationId, requestId } = req.body as { conversationId?: string | null; requestId?: string | null };
 
-    const { data: run, error: runError } = await db
-      .from("agent_runs")
-      .insert({
+    const run = await prisma.agent_runs.create({
+      data: {
         customer_id: req.user!.id,
         conversation_id: conversationId ?? null,
         request_id: requestId ?? null,
@@ -30,10 +31,8 @@ router.post(
         current_step: DEMO_RUN_STEPS[0],
         model: DEMO_MODEL,
         prompt_version: DEMO_PROMPT_VERSION,
-      })
-      .select()
-      .single();
-    if (runError || !run) throw runError ?? new Error("Failed to create run");
+      },
+    });
 
     res.status(201).json({ run, steps: DEMO_RUN_STEPS });
   }),
@@ -55,20 +54,24 @@ router.patch(
         completedAt?: string | null;
         errorMessage?: string | null;
       };
-    const update: Database["public"]["Tables"]["agent_runs"]["Update"] = {};
+    const update: Prisma.agent_runsUpdateInput = {};
     if (status !== undefined) update.status = status;
     if (currentStep !== undefined) update.current_step = currentStep;
     if (toolName !== undefined) update.tool_name = toolName;
-    if (toolInput !== undefined) update.tool_input = toolInput;
-    if (toolOutput !== undefined) update.tool_output = toolOutput;
+    if (toolInput !== undefined) update.tool_input = toolInput === null ? Prisma.JsonNull : (toolInput as Prisma.InputJsonValue);
+    if (toolOutput !== undefined) update.tool_output = toolOutput === null ? Prisma.JsonNull : (toolOutput as Prisma.InputJsonValue);
     if (iterations !== undefined) update.iterations = iterations;
     if (completedAt !== undefined) update.completed_at = completedAt;
     if (errorMessage !== undefined) update.error_message = errorMessage;
     if (Object.keys(update).length === 0) throw badRequest("Nothing to update");
 
-    const { data, error } = await db.from("agent_runs").update(update).eq("id", req.params.id).select().single();
-    if (error || !data) throw notFound("Run not found");
-    res.json(data);
+    try {
+      const data = await prisma.agent_runs.update({ where: { id: req.params.id }, data: update });
+      res.json(data);
+    } catch (err) {
+      if (isNotFound(err)) throw notFound("Run not found");
+      throw err;
+    }
   }),
 );
 
@@ -85,23 +88,19 @@ router.post(
     const { requestedAction, reason } = req.body as { requestedAction?: string; reason?: string | null };
     if (!requestedAction) throw badRequest("requestedAction is required");
 
-    const { data: approval, error } = await db
-      .from("agent_approvals")
-      .insert({
+    const approval = await prisma.agent_approvals.create({
+      data: {
         agent_run_id: req.params.id,
         requested_action: requestedAction,
         reason: reason ?? null,
         status: "pending",
-      })
-      .select()
-      .single();
-    if (error || !approval) throw error ?? new Error("Failed to create approval");
+      },
+    });
 
-    const { error: runError } = await db
-      .from("agent_runs")
-      .update({ status: "awaiting_approval" })
-      .eq("id", req.params.id);
-    if (runError) throw runError;
+    await prisma.agent_runs.updateMany({
+      where: { id: req.params.id },
+      data: { status: "awaiting_approval" },
+    });
 
     res.status(201).json(approval);
   }),

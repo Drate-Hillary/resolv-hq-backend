@@ -4,8 +4,9 @@ import { badRequest, notFound } from "../lib/errors.js";
 import { formatMemberSince, mapChatMessageRow, mapConversationRow } from "../lib/mappers.js";
 import { assertConversationAccess } from "../lib/ownership.js";
 import { finalStatusIds, loadStatuses } from "../lib/statuses.js";
-import { db } from "../lib/supabase.js";
+import { prisma } from "../lib/prisma.js";
 import { asyncRoute } from "../middleware/error-handler.js";
+import type { AiConversationRow, AiMessageRow, RequestRow } from "../types/database.types.js";
 
 const router = Router();
 
@@ -17,12 +18,11 @@ function isStaff(role: string): boolean {
  * caller's own account, resolved server-side from req.user, never
  * client-supplied. */
 async function loadAccountInput(userId: string, role: string): Promise<AiAccountInput> {
-  const { data: profile } = await db.from("profiles").select("*").eq("id", userId).single();
+  const profile = await prisma.profiles.findUnique({ where: { id: userId } });
 
-  let customerProfile: { organization_name: string | null; city: string | null; country: string } | null = null;
+  let customerProfile: { organization_name: string | null; city: string | null; country: string | null } | null = null;
   if (role === "customer") {
-    const { data } = await db.from("customer_profiles").select("*").eq("user_id", userId).single();
-    customerProfile = data;
+    customerProfile = await prisma.customer_profiles.findUnique({ where: { user_id: userId } });
   }
 
   return {
@@ -31,7 +31,7 @@ async function loadAccountInput(userId: string, role: string): Promise<AiAccount
     organizationName: customerProfile?.organization_name ?? null,
     city: customerProfile?.city ?? null,
     country: customerProfile?.country ?? "Uganda",
-    memberSince: profile ? formatMemberSince(profile.created_at) : "unknown",
+    memberSince: profile ? formatMemberSince(profile.created_at as unknown as string) : "unknown",
   };
 }
 
@@ -45,12 +45,9 @@ router.post(
   "/conversations",
   asyncRoute(async (req: Request, res: Response) => {
     const { title } = req.body as { title?: string };
-    const { data, error } = await db
-      .from("ai_conversations")
-      .insert({ customer_id: req.user!.id, title: title ?? null })
-      .select()
-      .single();
-    if (error || !data) throw error ?? new Error("Failed to create conversation");
+    const data = (await prisma.ai_conversations.create({
+      data: { customer_id: req.user!.id, title: title ?? null },
+    })) as unknown as AiConversationRow;
     res.status(201).json(mapConversationRow(data, 0));
   }),
 );
@@ -58,22 +55,22 @@ router.post(
 router.get(
   "/conversations",
   asyncRoute(async (req: Request, res: Response) => {
-    const { data: conversations, error } = await db
-      .from("ai_conversations")
-      .select("*")
-      .eq("customer_id", req.user!.id)
-      .order("created_at", { ascending: false });
-    if (error) throw error;
-    const rows = conversations ?? [];
+    const rows = (await prisma.ai_conversations.findMany({
+      where: { customer_id: req.user!.id },
+      orderBy: { created_at: "desc" },
+    })) as unknown as AiConversationRow[];
     if (rows.length === 0) {
       res.json([]);
       return;
     }
 
     const ids = rows.map((c) => c.id);
-    const { data: messages } = await db.from("ai_messages").select("id, conversation_id").in("conversation_id", ids);
+    const messages = await prisma.ai_messages.findMany({
+      where: { conversation_id: { in: ids } },
+      select: { id: true, conversation_id: true },
+    });
     const countByConversation = new Map<string, number>();
-    for (const m of messages ?? []) {
+    for (const m of messages) {
       countByConversation.set(m.conversation_id, (countByConversation.get(m.conversation_id) ?? 0) + 1);
     }
     res.json(rows.map((c) => mapConversationRow(c, countByConversation.get(c.id) ?? 0)));
@@ -84,13 +81,11 @@ router.get(
   "/conversations/:id",
   asyncRoute(async (req: Request, res: Response) => {
     await assertConversationAccess(req.params.id, req.user!);
-    const { data: messages, error } = await db
-      .from("ai_messages")
-      .select("*")
-      .eq("conversation_id", req.params.id)
-      .order("created_at", { ascending: true });
-    if (error) throw error;
-    res.json((messages ?? []).map((m) => mapChatMessageRow(m)));
+    const messages = (await prisma.ai_messages.findMany({
+      where: { conversation_id: req.params.id },
+      orderBy: { created_at: "asc" },
+    })) as unknown as AiMessageRow[];
+    res.json(messages.map((m) => mapChatMessageRow(m)));
   }),
 );
 
@@ -108,31 +103,30 @@ router.post(
     const { content } = req.body as { content?: string };
     if (!content) throw badRequest("content is required");
 
-    const { data: userRow, error: userError } = await db
-      .from("ai_messages")
-      .insert({ conversation_id: req.params.id, sender_type: "customer", content })
-      .select()
-      .single();
-    if (userError || !userRow) throw userError ?? new Error("Failed to persist message");
+    const userRow = (await prisma.ai_messages.create({
+      data: { conversation_id: req.params.id, sender_type: "customer", content },
+    })) as unknown as AiMessageRow;
 
     const statuses = await loadStatuses();
     const statusNameById = new Map(statuses.map((s) => [s.id, s.name]));
     const finalIds = await finalStatusIds();
 
-    const [{ data: docs }, { data: requests }, account] = await Promise.all([
-      db.from("knowledge_documents").select("*").eq("status", "published"),
-      isStaff(user.role)
-        ? db.from("requests").select("*").not("status_id", "in", `(${finalIds.join(",") || "null"})`)
-        : db.from("requests").select("*").eq("customer_id", user.id),
+    const [docs, requests, account] = await Promise.all([
+      prisma.knowledge_documents.findMany({ where: { status: "published" } }),
+      (isStaff(user.role)
+        ? prisma.requests.findMany({
+            where: finalIds.length > 0 ? { status_id: { notIn: finalIds } } : undefined,
+          })
+        : prisma.requests.findMany({ where: { customer_id: user.id } })) as unknown as Promise<RequestRow[]>,
       loadAccountInput(user.id, user.role),
     ]);
 
-    const knowledgeInputs: AiKnowledgeInput[] = (docs ?? []).map((d) => ({
+    const knowledgeInputs: AiKnowledgeInput[] = docs.map((d) => ({
       id: d.id,
       title: d.title,
       content: d.content ?? "",
     }));
-    const requestInputs: AiRequestInput[] = (requests ?? []).map((r) => ({
+    const requestInputs: AiRequestInput[] = requests.map((r) => ({
       id: r.id,
       title: r.title,
       status: r.status_id ? statusNameById.get(r.status_id) ?? "unknown" : "unknown",
@@ -140,16 +134,13 @@ router.post(
 
     const answer = await generateAssistantReply(content, knowledgeInputs, requestInputs, account, isStaff(user.role));
 
-    const { data: assistantRow, error: assistantError } = await db
-      .from("ai_messages")
-      .insert({
+    const assistantRow = (await prisma.ai_messages.create({
+      data: {
         conversation_id: req.params.id,
         sender_type: "assistant",
         content: answer.text,
-      })
-      .select()
-      .single();
-    if (assistantError || !assistantRow) throw assistantError ?? new Error("Failed to persist assistant reply");
+      },
+    })) as unknown as AiMessageRow;
 
     res.status(201).json({
       userMessage: mapChatMessageRow(userRow),
@@ -170,22 +161,18 @@ router.patch(
       throw badRequest('feedback must be "up", "down", or null');
     }
 
-    const { data: message, error: messageError } = await db
-      .from("ai_messages")
-      .select("id, conversation_id")
-      .eq("id", req.params.id)
-      .single();
-    if (messageError || !message) throw notFound("Message not found");
+    const message = await prisma.ai_messages.findUnique({
+      where: { id: req.params.id },
+      select: { id: true, conversation_id: true },
+    });
+    if (!message) throw notFound("Message not found");
 
     await assertConversationAccess(message.conversation_id, req.user!);
 
-    const { data, error } = await db
-      .from("ai_messages")
-      .update({ feedback })
-      .eq("id", req.params.id)
-      .select()
-      .single();
-    if (error || !data) throw error ?? new Error("Failed to update feedback");
+    const data = (await prisma.ai_messages.update({
+      where: { id: req.params.id },
+      data: { feedback },
+    })) as unknown as AiMessageRow;
 
     res.json(mapChatMessageRow(data));
   }),

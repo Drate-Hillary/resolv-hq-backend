@@ -9,7 +9,7 @@
 // code — it all comes from the boundary_rules table (see
 // routes/admin/boundary-rules.ts for the CRUD that manages it), so adding,
 // retiring, or tuning a rule never requires a code change or a redeploy.
-import { db } from "./supabase.js";
+import { prisma } from "./prisma.js";
 
 export interface BoundaryViolation {
   category: string;
@@ -36,15 +36,13 @@ export function invalidateBoundaryRulesCache(): void {
 async function loadCompiledRules(): Promise<CompiledRule[]> {
   if (cache && cache.expiresAt > Date.now()) return cache.rules;
 
-  const { data, error } = await db
-    .from("boundary_rules")
-    .select("*")
-    .eq("is_active", true)
-    .order("created_at", { ascending: true });
-  if (error) throw error;
+  const data = await prisma.boundary_rules.findMany({
+    where: { is_active: true },
+    orderBy: { created_at: "asc" },
+  });
 
   const rules: CompiledRule[] = [];
-  for (const row of data ?? []) {
+  for (const row of data) {
     try {
       rules.push({ category: row.category, regex: new RegExp(row.pattern, "i"), fallbackMessage: row.fallback_message });
     } catch (err) {

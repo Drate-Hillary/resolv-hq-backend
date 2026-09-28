@@ -1,11 +1,14 @@
+import { Prisma } from "@prisma/client";
 import { Router, type Request, type Response } from "express";
 import { requireRole } from "../lib/auth.js";
 import { badRequest, notFound } from "../lib/errors.js";
 import { formatMemberSince, initialsFromName } from "../lib/mappers.js";
-import { db } from "../lib/supabase.js";
+import { isNotFound } from "../lib/prisma-errors.js";
+import { prisma } from "../lib/prisma.js";
+import { supabaseAdmin } from "../lib/supabase.js";
 import { asyncRoute } from "../middleware/error-handler.js";
 import type { UserProfile } from "../types/api.js";
-import type { Database } from "../types/database.types.js";
+import type { CustomerProfile, Profile } from "../types/database.types.js";
 
 const router = Router();
 
@@ -13,22 +16,18 @@ router.get(
   "/",
   asyncRoute(async (req: Request, res: Response) => {
     const userId = req.user!.id;
-    const { data: profile, error } = await db.from("profiles").select("*").eq("id", userId).single();
-    if (error || !profile) throw notFound("Profile not found");
+    const profile = (await prisma.profiles.findUnique({ where: { id: userId } })) as unknown as Profile | null;
+    if (!profile) throw notFound("Profile not found");
 
-    const { data: authUser } = await db.auth.admin.getUserById(userId);
+    const { data: authUser } = await supabaseAdmin.auth.admin.getUserById(userId);
     const email = authUser?.user?.email ?? profile.email ?? "";
     const fullName = [profile.first_name, profile.last_name].filter(Boolean).join(" ");
 
-    let customerProfile: {
-      organization_name: string | null;
-      city: string | null;
-      country: string;
-      preferred_language: string;
-    } | null = null;
+    let customerProfile: CustomerProfile | null = null;
     if (profile.role === "customer") {
-      const { data } = await db.from("customer_profiles").select("*").eq("user_id", userId).single();
-      customerProfile = data;
+      customerProfile = (await prisma.customer_profiles.findUnique({
+        where: { user_id: userId },
+      })) as unknown as CustomerProfile | null;
     }
 
     const body: UserProfile = {
@@ -57,7 +56,7 @@ router.patch(
     const userId = req.user!.id;
     const { name, phone, email } = req.body as { name?: string; phone?: string; email?: string };
 
-    const profilePatch: Database["public"]["Tables"]["profiles"]["Update"] = {};
+    const profilePatch: Prisma.profilesUpdateInput = {};
     if (name !== undefined) {
       const [firstName, ...rest] = name.trim().split(/\s+/);
       profilePatch.first_name = firstName || name;
@@ -65,16 +64,15 @@ router.patch(
     }
     if (phone !== undefined) profilePatch.phone = phone;
     if (Object.keys(profilePatch).length > 0) {
-      const { error } = await db.from("profiles").update(profilePatch).eq("id", userId);
-      if (error) throw error;
+      await prisma.profiles.updateMany({ where: { id: userId }, data: profilePatch });
     }
 
     // Service-role client updates auth directly — there's no session to call
     // auth.updateUser() against, unlike the source app's client-side flow.
     if (email !== undefined) {
-      const { error } = await db.auth.admin.updateUserById(userId, { email });
+      const { error } = await supabaseAdmin.auth.admin.updateUserById(userId, { email });
       if (error) throw error;
-      await db.from("profiles").update({ email }).eq("id", userId);
+      await prisma.profiles.updateMany({ where: { id: userId }, data: { email } });
     }
 
     res.json({
@@ -97,20 +95,23 @@ router.patch(
       preferredLanguage: string;
     }>;
 
-    const patch: Database["public"]["Tables"]["customer_profiles"]["Update"] = {};
+    const patch: Prisma.customer_profilesUpdateInput = {};
     if (organizationName !== undefined) patch.organization_name = organizationName;
     if (city !== undefined) patch.city = city;
     if (country !== undefined) patch.country = country;
     if (preferredLanguage !== undefined) patch.preferred_language = preferredLanguage;
     if (Object.keys(patch).length === 0) throw badRequest("No preference fields provided");
 
-    const { data, error } = await db
-      .from("customer_profiles")
-      .update(patch)
-      .eq("user_id", userId)
-      .select()
-      .single();
-    if (error || !data) throw error ?? notFound("Customer profile not found");
+    let data: CustomerProfile;
+    try {
+      data = (await prisma.customer_profiles.update({
+        where: { user_id: userId },
+        data: patch,
+      })) as unknown as CustomerProfile;
+    } catch (err) {
+      if (isNotFound(err)) throw notFound("Customer profile not found");
+      throw err;
+    }
 
     res.json({
       organizationName: data.organization_name ?? "",

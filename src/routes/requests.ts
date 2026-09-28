@@ -5,9 +5,10 @@ import { badRequest, notFound } from "../lib/errors.js";
 import { buildTimeline, mapMessageRow, mapRequestRow, priorityToDb, resolveCategoryId } from "../lib/mappers.js";
 import { assertRequestAccess } from "../lib/ownership.js";
 import { finalStatusIds, loadStatuses, statusIdByName } from "../lib/statuses.js";
-import { db } from "../lib/supabase.js";
+import { prisma } from "../lib/prisma.js";
 import { asyncRoute } from "../middleware/error-handler.js";
 import type { RequestCategoryOption } from "../types/api.js";
+import type { RequestMessageRow, RequestRow, RequestStatusHistoryRow } from "../types/database.types.js";
 
 const router = Router();
 
@@ -22,9 +23,8 @@ function senderTypeFor(role: string): "customer" | "admin" | "agent" {
 }
 
 async function loadCategories(): Promise<RequestCategoryOption[]> {
-  const { data, error } = await db.from("request_categories").select("*");
-  if (error) throw error;
-  return (data ?? []).map((row) => ({ id: row.id, name: row.name, description: row.description }));
+  const data = await prisma.request_categories.findMany();
+  return data.map((row) => ({ id: row.id, name: row.name, description: row.description }));
 }
 
 async function resolveStaffNames(rows: { customer_id: string; assigned_agent_id: string | null }[]) {
@@ -35,8 +35,11 @@ async function resolveStaffNames(rows: { customer_id: string; assigned_agent_id:
   }
   const nameById = new Map<string, string | null>();
   if (ids.size === 0) return nameById;
-  const { data } = await db.from("profiles").select("id, first_name, last_name").in("id", Array.from(ids));
-  for (const p of data ?? []) nameById.set(p.id, [p.first_name, p.last_name].filter(Boolean).join(" ") || null);
+  const data = await prisma.profiles.findMany({
+    where: { id: { in: Array.from(ids) } },
+    select: { id: true, first_name: true, last_name: true },
+  });
+  for (const p of data) nameById.set(p.id, [p.first_name, p.last_name].filter(Boolean).join(" ") || null);
   return nameById;
 }
 
@@ -45,13 +48,19 @@ async function loadRequestDetail(id: string, user: { role: string }) {
   const statuses = await loadStatuses();
   const statusNameById = new Map(statuses.map((s) => [s.id, s.name]));
 
-  const [{ data: row, error }, categories, messagesRes, historyRes] = await Promise.all([
-    db.from("requests").select("*").eq("id", id).single(),
+  const [row, categories, messages, history] = await Promise.all([
+    prisma.requests.findUnique({ where: { id } }) as unknown as Promise<RequestRow | null>,
     loadCategories(),
-    db.from("request_messages").select("*").eq("request_id", id).order("created_at", { ascending: true }),
-    db.from("request_status_history").select("*").eq("request_id", id).order("created_at", { ascending: true }),
+    prisma.request_messages.findMany({
+      where: { request_id: id },
+      orderBy: { created_at: "asc" },
+    }) as unknown as Promise<RequestMessageRow[]>,
+    prisma.request_status_history.findMany({
+      where: { request_id: id },
+      orderBy: { created_at: "asc" },
+    }) as unknown as Promise<RequestStatusHistoryRow[]>,
   ]);
-  if (error || !row) throw notFound("Request not found");
+  if (!row) throw notFound("Request not found");
 
   const categoryMap = new Map(categories.map((c) => [c.id, c.name]));
   const categoryName = row.category_id ? categoryMap.get(row.category_id) ?? null : null;
@@ -66,12 +75,10 @@ async function loadRequestDetail(id: string, user: { role: string }) {
     };
   }
 
-  const messages = (messagesRes.data ?? []).map(mapMessageRow);
-
   return {
     ...mapRequestRow(row, categoryName, statusName, staffExtra),
-    messages,
-    timeline: buildTimeline(historyRes.data ?? [], row.created_at, statusNameById),
+    messages: messages.map(mapMessageRow),
+    timeline: buildTimeline(history, row.created_at, statusNameById),
   };
 }
 
@@ -88,18 +95,19 @@ router.get(
     const categoryMap = new Map(categories.map((c) => [c.id, c.name]));
     const statusNameById = new Map(statuses.map((s) => [s.id, s.name]));
 
-    let query = db.from("requests").select("*");
+    let rows: RequestRow[];
     if (isStaff(user.role)) {
       const finalIds = await finalStatusIds();
-      if (finalIds.length > 0) query = query.not("status_id", "in", `(${finalIds.join(",")})`);
-      query = query.order("created_at", { ascending: true });
+      rows = (await prisma.requests.findMany({
+        where: finalIds.length > 0 ? { status_id: { notIn: finalIds } } : undefined,
+        orderBy: { created_at: "asc" },
+      })) as unknown as RequestRow[];
     } else {
-      query = query.eq("customer_id", user.id).order("created_at", { ascending: false });
+      rows = (await prisma.requests.findMany({
+        where: { customer_id: user.id },
+        orderBy: { created_at: "desc" },
+      })) as unknown as RequestRow[];
     }
-
-    const { data, error } = await query;
-    if (error) throw error;
-    const rows = data ?? [];
 
     if (isStaff(user.role)) {
       const nameById = await resolveStaffNames(rows);
@@ -144,9 +152,8 @@ router.post(
     const { category, priority } = classifyRequest(description);
     const resolvedCategoryId = categoryId ?? resolveCategoryId(categories, category);
 
-    const { data: requestRow, error } = await db
-      .from("requests")
-      .insert({
+    const requestRow = (await prisma.requests.create({
+      data: {
         customer_id: userId,
         category_id: resolvedCategoryId,
         status_id: submittedStatusId,
@@ -154,22 +161,17 @@ router.post(
         description,
         priority: priorityToDb(priority),
         source: "mobile",
-      })
-      .select()
-      .single();
-    if (error || !requestRow) throw error ?? new Error("Failed to create request");
+      },
+    })) as unknown as RequestRow;
 
-    const { data: messageRow, error: messageError } = await db
-      .from("request_messages")
-      .insert({ request_id: requestRow.id, sender_type: "customer", sender_id: userId, message: description })
-      .select()
-      .single();
-    if (messageError) throw messageError;
+    const messageRow = (await prisma.request_messages.create({
+      data: { request_id: requestRow.id, sender_type: "customer", sender_id: userId, message: description },
+    })) as unknown as RequestMessageRow;
 
     const categoryName = categories.find((c) => c.id === resolvedCategoryId)?.name ?? category;
     res.status(201).json({
       ...mapRequestRow(requestRow, categoryName, "submitted"),
-      messages: messageRow ? [mapMessageRow(messageRow)] : [],
+      messages: [mapMessageRow(messageRow)],
     });
   }),
 );
@@ -191,36 +193,38 @@ router.patch(
     const newStatusId = await statusIdByName(status);
     if (!newStatusId) throw badRequest(`Unknown status "${status}"`);
 
-    const { data: current, error: currentError } = await db
-      .from("requests")
-      .select("status_id, customer_id")
-      .eq("id", req.params.id)
-      .single();
-    if (currentError || !current) throw notFound("Request not found");
+    const current = await prisma.requests.findUnique({
+      where: { id: req.params.id },
+      select: { status_id: true, customer_id: true },
+    });
+    if (!current) throw notFound("Request not found");
 
     const finalIds = await finalStatusIds();
-    const { error } = await db
-      .from("requests")
-      .update({
+    await prisma.requests.update({
+      where: { id: req.params.id },
+      data: {
         status_id: newStatusId,
-        updated_at: new Date().toISOString(),
-        resolved_at: finalIds.includes(newStatusId) ? new Date().toISOString() : null,
-      })
-      .eq("id", req.params.id);
-    if (error) throw error;
-
-    await db.from("request_status_history").insert({
-      request_id: req.params.id,
-      old_status_id: current.status_id,
-      new_status_id: newStatusId,
-      changed_by: req.user!.id,
+        updated_at: new Date(),
+        resolved_at: finalIds.includes(newStatusId) ? new Date() : null,
+      },
     });
 
-    await db.from("notifications").insert({
-      user_id: current.customer_id,
-      request_id: req.params.id,
-      title: "Request updated",
-      message: `Your request is now "${status}".`,
+    await prisma.request_status_history.create({
+      data: {
+        request_id: req.params.id,
+        old_status_id: current.status_id,
+        new_status_id: newStatusId,
+        changed_by: req.user!.id,
+      },
+    });
+
+    await prisma.notifications.create({
+      data: {
+        user_id: current.customer_id,
+        request_id: req.params.id,
+        title: "Request updated",
+        message: `Your request is now "${status}".`,
+      },
     });
 
     res.json(await loadRequestDetail(req.params.id, req.user!));
@@ -232,8 +236,10 @@ router.patch(
   "/:id/assign",
   requireRole("staff"),
   asyncRoute(async (req: Request, res: Response) => {
-    const { error } = await db.from("requests").update({ assigned_agent_id: req.user!.id }).eq("id", req.params.id);
-    if (error) throw error;
+    await prisma.requests.updateMany({
+      where: { id: req.params.id },
+      data: { assigned_agent_id: req.user!.id },
+    });
     res.json(await loadRequestDetail(req.params.id, req.user!));
   }),
 );
@@ -242,13 +248,11 @@ router.get(
   "/:id/messages",
   asyncRoute(async (req: Request, res: Response) => {
     await assertRequestAccess(req.params.id, req.user!);
-    const { data, error } = await db
-      .from("request_messages")
-      .select("*")
-      .eq("request_id", req.params.id)
-      .order("created_at", { ascending: true });
-    if (error) throw error;
-    res.json((data ?? []).map(mapMessageRow));
+    const data = (await prisma.request_messages.findMany({
+      where: { request_id: req.params.id },
+      orderBy: { created_at: "asc" },
+    })) as unknown as RequestMessageRow[];
+    res.json(data.map(mapMessageRow));
   }),
 );
 
@@ -261,17 +265,14 @@ router.post(
     const { text } = req.body as { text?: string };
     if (!text) throw badRequest("text is required");
 
-    const { data, error } = await db
-      .from("request_messages")
-      .insert({
+    const data = (await prisma.request_messages.create({
+      data: {
         request_id: req.params.id,
         sender_type: senderTypeFor(user.role),
         sender_id: user.id,
         message: text,
-      })
-      .select()
-      .single();
-    if (error || !data) throw error ?? new Error("Failed to send message");
+      },
+    })) as unknown as RequestMessageRow;
     res.status(201).json(mapMessageRow(data));
   }),
 );
