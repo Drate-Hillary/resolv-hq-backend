@@ -10,7 +10,7 @@
 // Every trigger phrase and its question is data (clarification_triggers
 // table, see routes/admin/clarification-triggers.ts), not hardcoded in the
 // app — same pattern as lib/ai-boundary.ts.
-import { db } from "./supabase.js";
+import { prisma } from "./prisma.js";
 
 export interface ClarificationResult {
   question: string;
@@ -54,17 +54,15 @@ export function invalidateClarificationCache(): void {
 async function loadCompiled(): Promise<CompiledRules> {
   if (cache && cache.expiresAt > Date.now()) return cache;
 
-  const { data, error } = await db
-    .from("clarification_triggers")
-    .select("*")
-    .eq("is_active", true)
-    .order("created_at", { ascending: true });
-  if (error) throw error;
+  const rows = await prisma.clarification_triggers.findMany({
+    where: { is_active: true },
+    orderBy: { created_at: "asc" },
+  });
 
   const triggers: CompiledTrigger[] = [];
   let fallback: CompiledFallback | null = null;
 
-  for (const row of data ?? []) {
+  for (const row of rows) {
     if (row.is_fallback) {
       fallback = { question: row.question };
       continue;

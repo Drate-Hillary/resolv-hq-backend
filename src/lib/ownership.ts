@@ -1,4 +1,4 @@
-import { db } from "./supabase.js";
+import { prisma } from "./prisma.js";
 import { forbidden, notFound } from "./errors.js";
 
 /**
@@ -9,13 +9,12 @@ import { forbidden, notFound } from "./errors.js";
  * first. Staff callers are never restricted (open-queue semantics).
  */
 export async function assertRequestAccess(requestId: string, user: { id: string; role: string }) {
-  const { data, error } = await db
-    .from("requests")
-    .select("id, customer_id")
-    .eq("id", requestId)
-    .single();
+  const data = await prisma.requests.findUnique({
+    where: { id: requestId },
+    select: { id: true, customer_id: true },
+  });
 
-  if (error || !data) throw notFound("Request not found");
+  if (!data) throw notFound("Request not found");
 
   const isStaff = user.role === "admin" || user.role === "agent";
   if (!isStaff && data.customer_id !== user.id) {
@@ -30,13 +29,12 @@ export async function assertConversationAccess(
   conversationId: string,
   user: { id: string; role: string }
 ) {
-  const { data, error } = await db
-    .from("ai_conversations")
-    .select("id, customer_id")
-    .eq("id", conversationId)
-    .single();
+  const data = await prisma.ai_conversations.findUnique({
+    where: { id: conversationId },
+    select: { id: true, customer_id: true },
+  });
 
-  if (error || !data) throw notFound("Conversation not found");
+  if (!data) throw notFound("Conversation not found");
 
   if (data.customer_id !== user.id) {
     throw forbidden("You do not have access to this conversation");

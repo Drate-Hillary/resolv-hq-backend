@@ -13,7 +13,7 @@
 // before this provider is given up on and the next one is tried.
 import { createHash } from "node:crypto";
 import { redis } from "../redis.js";
-import { db } from "../supabase.js";
+import { prisma } from "../prisma.js";
 import { AnthropicClient } from "./providers/anthropic.js";
 import { OpenAiClient } from "./providers/openai.js";
 import { withRetry } from "./retry.js";
@@ -68,14 +68,11 @@ export async function completeWithFallback(messages: LlmMessage[], tools?: LlmTo
     console.error("LLM cache read failed, continuing without cache:", err);
   }
 
-  const { data, error } = await db
-    .from("agent_providers")
-    .select("id, name, provider, model, api_key")
-    .eq("status", "active")
-    .order("created_at", { ascending: true });
-  if (error) throw error;
-
-  const providers = data ?? [];
+  const providers = await prisma.agent_providers.findMany({
+    where: { status: "active" },
+    select: { id: true, name: true, provider: true, model: true, api_key: true },
+    orderBy: { created_at: "asc" },
+  });
   if (providers.length === 0) {
     throw new GatewayUnavailableError("No active model providers registered");
   }

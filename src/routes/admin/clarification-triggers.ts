@@ -2,14 +2,15 @@
 // Clarification Prompting Logic. Every vague-phrase pattern and its
 // targeted question lives here, editable without a code change or
 // redeploy — same shape as routes/admin/boundary-rules.ts.
+import { Prisma } from "@prisma/client";
 import type { Request, Response } from "express";
 import { Router } from "express";
 import { invalidateClarificationCache } from "../../lib/clarification.js";
 import { requireRole } from "../../lib/auth.js";
 import { badRequest, notFound } from "../../lib/errors.js";
-import { db } from "../../lib/supabase.js";
+import { isNotFound } from "../../lib/prisma-errors.js";
+import { prisma } from "../../lib/prisma.js";
 import { asyncRoute } from "../../middleware/error-handler.js";
-import type { Database } from "../../types/database.types.js";
 
 const router = Router();
 router.use(requireRole("staff"));
@@ -27,9 +28,8 @@ function assertValidPattern(pattern: string) {
 router.get(
   "/",
   asyncRoute(async (_req: Request, res: Response) => {
-    const { data, error } = await db.from("clarification_triggers").select("*").order("created_at", { ascending: true });
-    if (error) throw error;
-    res.json(data ?? []);
+    const data = await prisma.clarification_triggers.findMany({ orderBy: { created_at: "asc" } });
+    res.json(data);
   }),
 );
 
@@ -46,15 +46,14 @@ router.post(
     if (!is_fallback && !pattern?.trim()) throw badRequest("pattern is required unless is_fallback is true");
     if (pattern?.trim()) assertValidPattern(pattern);
 
-    const insert: Database["public"]["Tables"]["clarification_triggers"]["Insert"] = {
+    const insert: Prisma.clarification_triggersCreateInput = {
       pattern: pattern?.trim() || null,
       question: question.trim(),
       is_fallback: is_fallback ?? false,
       is_active: is_active ?? true,
     };
 
-    const { data, error } = await db.from("clarification_triggers").insert(insert).select("*").single();
-    if (error || !data) throw error ?? new Error("Failed to create trigger");
+    const data = await prisma.clarification_triggers.create({ data: insert });
 
     invalidateClarificationCache();
     res.status(201).json(data);
@@ -71,7 +70,7 @@ router.patch(
       is_active?: boolean;
     };
 
-    const update: Database["public"]["Tables"]["clarification_triggers"]["Update"] = {};
+    const update: Prisma.clarification_triggersUpdateInput = {};
     if (pattern !== undefined) {
       if (pattern?.trim()) assertValidPattern(pattern);
       update.pattern = pattern?.trim() || null;
@@ -84,13 +83,13 @@ router.patch(
     if (is_active !== undefined) update.is_active = is_active;
     if (Object.keys(update).length === 0) throw badRequest("Nothing to update");
 
-    const { data, error } = await db
-      .from("clarification_triggers")
-      .update(update)
-      .eq("id", req.params.id)
-      .select("*")
-      .single();
-    if (error || !data) throw notFound("Trigger not found");
+    let data;
+    try {
+      data = await prisma.clarification_triggers.update({ where: { id: req.params.id }, data: update });
+    } catch (err) {
+      if (isNotFound(err)) throw notFound("Trigger not found");
+      throw err;
+    }
 
     invalidateClarificationCache();
     res.json(data);
@@ -100,8 +99,7 @@ router.patch(
 router.delete(
   "/:id",
   asyncRoute(async (req: Request, res: Response) => {
-    const { error } = await db.from("clarification_triggers").delete().eq("id", req.params.id);
-    if (error) throw error;
+    await prisma.clarification_triggers.deleteMany({ where: { id: req.params.id } });
 
     invalidateClarificationCache();
     res.status(204).end();
