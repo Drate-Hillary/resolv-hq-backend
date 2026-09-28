@@ -66,12 +66,30 @@ export const AGENT_TOOL_DEFINITIONS: LlmToolDefinition[] = [
           type: "string",
           description: "A one-sentence summary of the issue to escalate, based on the conversation so far.",
         },
+        keyFacts: {
+          type: "string",
+          description:
+            "Optional: the specific facts a human reviewer needs from the conversation so far — dates, order/account details mentioned, what the caller already tried. A few short bullet-style lines, not a transcript dump.",
+        },
+        suggestedAction: {
+          type: "string",
+          description: "Optional: what you think the human reviewer should do next.",
+        },
       },
       required: ["summary"],
       additionalProperties: false,
     },
   },
 ];
+
+export interface EscalationDraft {
+  title: string;
+  description: string;
+  category: string;
+  priority: "low" | "normal" | "high";
+  keyFacts: string | null;
+  suggestedAction: string | null;
+}
 
 function scoreMatch(query: string, haystack: string): number {
   const words = query
@@ -115,18 +133,39 @@ function outageStatusChecker(activeRequests: AiRequestInput[]): string {
   return activeRequests.map((r) => `- "${r.title}": ${r.status}`).join("\n");
 }
 
-function draftEscalationTicket(args: Record<string, unknown>): string {
-  const summary = typeof args.summary === "string" ? args.summary : "";
-  if (!summary.trim()) return "Cannot draft a ticket without a summary of the issue.";
+/** Pure synthesis step: turns the model's tool-call arguments (its read of
+ * the conversation so far) into a structured brief. Exported so
+ * react-agent.ts can capture the same structured object the loop hands back
+ * to a human reviewer, without re-deriving it from the formatted text. */
+export function buildEscalationDraft(args: Record<string, unknown>): EscalationDraft | null {
+  const summary = typeof args.summary === "string" ? args.summary.trim() : "";
+  if (!summary) return null;
 
   const { category, priority } = classifyRequest(summary);
-  return [
+  const keyFacts = typeof args.keyFacts === "string" && args.keyFacts.trim() ? args.keyFacts.trim() : null;
+  const suggestedAction =
+    typeof args.suggestedAction === "string" && args.suggestedAction.trim() ? args.suggestedAction.trim() : null;
+
+  return { title: category, description: summary, category, priority, keyFacts, suggestedAction };
+}
+
+export function formatEscalationDraft(draft: EscalationDraft): string {
+  const lines = [
     "DRAFT (not submitted — a human must review and file this):",
-    `Title: ${category}`,
-    `Description: ${summary.trim()}`,
-    `Suggested category: ${category}`,
-    `Suggested priority: ${priority}`,
-  ].join("\n");
+    `Title: ${draft.title}`,
+    `Description: ${draft.description}`,
+    `Suggested category: ${draft.category}`,
+    `Suggested priority: ${draft.priority}`,
+  ];
+  if (draft.keyFacts) lines.push(`Key facts: ${draft.keyFacts}`);
+  if (draft.suggestedAction) lines.push(`Suggested next step: ${draft.suggestedAction}`);
+  return lines.join("\n");
+}
+
+function draftEscalationTicket(args: Record<string, unknown>): string {
+  const draft = buildEscalationDraft(args);
+  if (!draft) return "Cannot draft a ticket without a summary of the issue.";
+  return formatEscalationDraft(draft);
 }
 
 export function executeAgentTool(

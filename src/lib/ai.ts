@@ -8,6 +8,7 @@
 // Abstraction Layer (lib/llm/gateway.ts) first and only drops back to
 // answerQuestion() if no provider is registered/active or every one fails —
 // so the chat keeps working in dev with zero keys configured.
+import type { EscalationDraft } from "./agent-tools.js";
 import { detectBoundaryViolation } from "./ai-boundary.js";
 import { checkForClarification } from "./clarification.js";
 import { GatewayUnavailableError } from "./llm/gateway.js";
@@ -40,6 +41,10 @@ export interface AiAnswer {
   sources: { id: string; title: string }[];
   suggestions: string[];
   steps: string[];
+  /** Set when the assistant drafted an escalation ticket this turn — the
+   * caller (routes/chat.ts) persists it as an agent_approvals row so a human
+   * can actually review it; it is never filed on the model's say-so. */
+  escalationDraft?: EscalationDraft;
 }
 
 const DEFAULT_STEPS = [
@@ -208,6 +213,7 @@ export async function generateAssistantReply(
         ...traceSteps,
         violation ? "Blocked a boundary-matrix violation" : undefined,
       ].filter((s): s is string => Boolean(s)),
+      escalationDraft: result.escalationDraft,
     };
   } catch (err) {
     if (!(err instanceof GatewayUnavailableError)) {
