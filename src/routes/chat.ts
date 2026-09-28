@@ -1,8 +1,10 @@
 import { Router, type Request, type Response } from "express";
+import { formatEscalationDraft } from "../lib/agent-tools.js";
 import { generateAssistantReply, type AiAccountInput, type AiKnowledgeInput, type AiRequestInput } from "../lib/ai.js";
 import { badRequest, notFound } from "../lib/errors.js";
 import { formatMemberSince, mapChatMessageRow, mapConversationRow } from "../lib/mappers.js";
 import { assertConversationAccess } from "../lib/ownership.js";
+import { SYSTEM_PROMPT_VERSION } from "../lib/prompts/system-prompt.js";
 import { finalStatusIds, loadStatuses } from "../lib/statuses.js";
 import { prisma } from "../lib/prisma.js";
 import { asyncRoute } from "../middleware/error-handler.js";
@@ -142,11 +144,39 @@ router.post(
       },
     })) as unknown as AiMessageRow;
 
+    // The tool itself never writes anything (AI Boundary Matrix — the
+    // toolset stays read-only); this is the one place a drafted escalation
+    // actually reaches a human; it's created "awaiting_approval", so nothing
+    // is filed until staff act on it via admin/approvals.ts.
+    let escalation: { approvalId: string } | null = null;
+    if (answer.escalationDraft) {
+      const run = await prisma.agent_runs.create({
+        data: {
+          customer_id: user.id,
+          conversation_id: req.params.id,
+          status: "awaiting_approval",
+          current_step: "draft_escalation_ticket",
+          prompt_version: SYSTEM_PROMPT_VERSION,
+          completed_at: new Date(),
+        },
+      });
+      const approval = await prisma.agent_approvals.create({
+        data: {
+          agent_run_id: run.id,
+          requested_action: formatEscalationDraft(answer.escalationDraft),
+          reason: answer.escalationDraft.suggestedAction,
+          status: "pending",
+        },
+      });
+      escalation = { approvalId: approval.id };
+    }
+
     res.status(201).json({
       userMessage: mapChatMessageRow(userRow),
       assistantMessage: mapChatMessageRow(assistantRow),
       suggestions: answer.suggestions,
       steps: answer.steps,
+      escalation,
     });
   }),
 );

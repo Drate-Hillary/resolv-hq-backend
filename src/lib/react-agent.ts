@@ -15,7 +15,7 @@
 //            calls), that's the final response — or MAX_ITERATIONS is hit,
 //            in which case the loop stops and returns a safe fallback
 //            rather than looping forever.
-import { AGENT_TOOL_DEFINITIONS, executeAgentTool } from "./agent-tools.js";
+import { AGENT_TOOL_DEFINITIONS, buildEscalationDraft, executeAgentTool, type EscalationDraft } from "./agent-tools.js";
 import type { AiAccountInput, AiKnowledgeInput, AiRequestInput } from "./ai.js";
 import { completeWithFallback } from "./llm/gateway.js";
 import type { LlmMessage } from "./llm/types.js";
@@ -32,6 +32,10 @@ export interface ReActResult {
   cached: boolean;
   iterations: number;
   trace: ReActStep[];
+  /** Set when the loop called draft_escalation_ticket — the structured brief
+   * for a human to review, kept alongside `content` rather than requiring
+   * the caller to re-parse it out of the tool's text observation. */
+  escalationDraft?: EscalationDraft;
 }
 
 /** Hard ceiling on Plan-Act-Observe cycles for a single turn — a structural
@@ -54,6 +58,7 @@ export async function runReActLoop(
     { role: "user", content: query },
   ];
   const trace: ReActStep[] = [];
+  let escalationDraft: EscalationDraft | undefined;
 
   for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     const result = await completeWithFallback(messages, AGENT_TOOL_DEFINITIONS);
@@ -74,6 +79,9 @@ export async function runReActLoop(
 
         trace.push({ phase: "act", detail: `${call.name}(${JSON.stringify(call.arguments)})` });
         const observation = executeAgentTool(call.name, call.arguments, { knowledge, activeRequests, account });
+        if (call.name === "draft_escalation_ticket") {
+          escalationDraft = buildEscalationDraft(call.arguments) ?? escalationDraft;
+        }
         trace.push({ phase: "observe", detail: observation.slice(0, 200) });
         messages.push({ role: "tool", toolCallId: call.id, content: observation });
       }
@@ -89,6 +97,7 @@ export async function runReActLoop(
       cached: result.cached ?? false,
       iterations: iteration,
       trace,
+      escalationDraft,
     };
   }
 
@@ -100,5 +109,6 @@ export async function runReActLoop(
     cached: false,
     iterations: MAX_ITERATIONS,
     trace,
+    escalationDraft,
   };
 }

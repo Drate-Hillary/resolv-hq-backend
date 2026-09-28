@@ -67,6 +67,7 @@ router.get(
     const runIds = Array.from(new Set(rows.map((r) => r.agent_run_id)));
 
     const requestByRunId = new Map<string, string | null>();
+    const runCustomerById = new Map<string, string | null>();
     const requestsById = new Map<
       string,
       { id: string; title: string; priority: RequestPriority; customer_id: string; assigned_agent_id: string | null }
@@ -76,9 +77,12 @@ router.get(
     if (runIds.length > 0) {
       const runs = await prisma.agent_runs.findMany({
         where: { id: { in: runIds } },
-        select: { id: true, request_id: true },
+        select: { id: true, request_id: true, customer_id: true },
       });
-      for (const r of runs) requestByRunId.set(r.id, r.request_id);
+      for (const r of runs) {
+        requestByRunId.set(r.id, r.request_id);
+        runCustomerById.set(r.id, r.customer_id);
+      }
 
       const requestIds = Array.from(
         new Set(runs.map((r) => r.request_id).filter((id): id is string => Boolean(id))),
@@ -89,16 +93,24 @@ router.get(
           select: { id: true, title: true, priority: true, customer_id: true, assigned_agent_id: true },
         })) as { id: string; title: string; priority: RequestPriority; customer_id: string; assigned_agent_id: string | null }[];
         for (const r of requests) requestsById.set(r.id, r);
+      }
 
-        const customerIds = Array.from(new Set(requests.map((r) => r.customer_id)));
-        if (customerIds.length > 0) {
-          const profiles = await prisma.profiles.findMany({
-            where: { id: { in: customerIds } },
-            select: { id: true, first_name: true, last_name: true },
-          });
-          for (const p of profiles) {
-            namesById.set(p.id, [p.first_name, p.last_name].filter(Boolean).join(" ") || "Unknown customer");
-          }
+      // Not every escalation is tied to a support request — one drafted from
+      // live AI chat only has agent_runs.customer_id, so resolve names from
+      // both sources rather than showing "Unknown customer" for those.
+      const customerIds = Array.from(
+        new Set([
+          ...Array.from(requestsById.values()).map((r) => r.customer_id),
+          ...runs.map((r) => r.customer_id).filter((id): id is string => Boolean(id)),
+        ]),
+      );
+      if (customerIds.length > 0) {
+        const profiles = await prisma.profiles.findMany({
+          where: { id: { in: customerIds } },
+          select: { id: true, first_name: true, last_name: true },
+        });
+        for (const p of profiles) {
+          namesById.set(p.id, [p.first_name, p.last_name].filter(Boolean).join(" ") || "Unknown customer");
         }
       }
     }
@@ -106,11 +118,12 @@ router.get(
     const tickets: AdminTicket[] = rows.map((row) => {
       const requestId = requestByRunId.get(row.agent_run_id) ?? null;
       const request = requestId ? requestsById.get(requestId) : undefined;
+      const customerId = request?.customer_id ?? runCustomerById.get(row.agent_run_id) ?? null;
       return {
         approvalId: row.id,
         requestId,
-        customerName: request ? namesById.get(request.customer_id) ?? "Unknown customer" : "Unknown customer",
-        subject: request?.title ?? row.requested_action,
+        customerName: customerId ? namesById.get(customerId) ?? "Unknown customer" : "Unknown customer",
+        subject: request?.title ?? row.requested_action.replace(/\s+/g, " ").trim().slice(0, 96),
         priority: request?.priority ?? "medium",
         waitingSince: formatWaiting(row.requested_at as unknown as string),
         status: row.status as ApprovalStatus,
@@ -136,7 +149,7 @@ router.get(
 
     const run = await prisma.agent_runs.findUnique({
       where: { id: approval.agent_run_id },
-      select: { request_id: true },
+      select: { request_id: true, conversation_id: true },
     });
     const requestId = run?.request_id ?? null;
 
@@ -152,6 +165,22 @@ router.get(
         id: m.id,
         role: m.sender_type === "customer" ? "user" : "agent",
         content: m.message,
+        timestamp: new Date(m.created_at ?? 0).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
+      }));
+    } else if (run?.conversation_id) {
+      // Escalated from live AI chat rather than a filed support request —
+      // pull the conversation itself so the reviewer has the same
+      // multi-turn context the assistant drafted the ticket from.
+      const messages = await prisma.ai_messages.findMany({
+        where: { conversation_id: run.conversation_id },
+        select: { id: true, sender_type: true, content: true, created_at: true },
+        orderBy: { created_at: "asc" },
+      });
+
+      transcript = messages.map((m) => ({
+        id: m.id,
+        role: m.sender_type === "customer" ? "user" : "agent",
+        content: m.content,
         timestamp: new Date(m.created_at ?? 0).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
       }));
     }
