@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from "express";
-import { formatEscalationDraft } from "../lib/agent-tools.js";
+import { formatEscalationDraft, type EscalationDraft } from "../lib/agent-tools.js";
 import { generateAssistantReply, type AiAccountInput, type AiKnowledgeInput, type AiRequestInput } from "../lib/ai.js";
 import { badRequest, notFound } from "../lib/errors.js";
 import { formatMemberSince, mapChatMessageRow, mapConversationRow } from "../lib/mappers.js";
@@ -148,7 +148,7 @@ router.post(
     // toolset stays read-only); this is the one place a drafted escalation
     // actually reaches a human; it's created "awaiting_approval", so nothing
     // is filed until staff act on it via admin/approvals.ts.
-    let escalation: { approvalId: string } | null = null;
+    let escalation: ({ approvalId: string } & EscalationDraft) | null = null;
     if (answer.escalationDraft) {
       const run = await prisma.agent_runs.create({
         data: {
@@ -157,7 +157,6 @@ router.post(
           status: "awaiting_approval",
           current_step: "draft_escalation_ticket",
           prompt_version: SYSTEM_PROMPT_VERSION,
-          completed_at: new Date(),
         },
       });
       const approval = await prisma.agent_approvals.create({
@@ -168,7 +167,7 @@ router.post(
           status: "pending",
         },
       });
-      escalation = { approvalId: approval.id };
+      escalation = { approvalId: approval.id, ...answer.escalationDraft };
     }
 
     res.status(201).json({

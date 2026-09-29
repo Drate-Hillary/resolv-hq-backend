@@ -117,6 +117,7 @@ export interface Database {
       requests: {
         Row: {
           id: string;
+          ticket_number: bigint;
           customer_id: string;
           category_id: string | null;
           status_id: string | null;
@@ -125,12 +126,15 @@ export interface Database {
           description: string;
           priority: RequestPriority;
           source: string;
+          ai_handled: boolean;
           created_at: string;
           updated_at: string;
           resolved_at: string | null;
+          closed_at: string | null;
         };
         Insert: {
           id?: string;
+          ticket_number?: bigint;
           customer_id: string;
           category_id?: string | null;
           status_id?: string | null;
@@ -139,9 +143,11 @@ export interface Database {
           description: string;
           priority?: RequestPriority;
           source?: string;
+          ai_handled?: boolean;
           created_at?: string;
           updated_at?: string;
           resolved_at?: string | null;
+          closed_at?: string | null;
         };
         Update: Partial<Database["public"]["Tables"]["requests"]["Insert"]>;
         Relationships: [];

@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import type { Request, Response } from "express";
 import { Router } from "express";
 import { requireRole } from "../../lib/auth.js";
@@ -48,6 +49,47 @@ router.post(
     })) as unknown as AgentProviderRow;
 
     res.status(201).json(toPublic(data));
+  }),
+);
+
+/**
+ * Partial update — name/provider/model always, api_key only when a
+ * non-empty value is sent, so fixing the model doesn't force re-entering
+ * the key. status is not handled here; use PATCH /:id/status for that.
+ */
+router.patch(
+  "/:id",
+  asyncRoute(async (req: Request, res: Response) => {
+    const { id } = req.params;
+    const { name, provider, model, api_key } = req.body as {
+      name?: string;
+      provider?: string;
+      model?: string | null;
+      api_key?: string;
+    };
+
+    const update: Prisma.agent_providersUpdateInput = {};
+    if (name !== undefined) {
+      if (!name.trim()) throw badRequest("name cannot be empty");
+      update.name = name.trim();
+    }
+    if (provider !== undefined) {
+      if (!provider.trim()) throw badRequest("provider cannot be empty");
+      update.provider = provider.trim();
+    }
+    if (model !== undefined) update.model = model?.trim() || null;
+    if (api_key !== undefined && api_key.trim()) update.api_key = api_key.trim();
+    if (Object.keys(update).length === 0) throw badRequest("Nothing to update");
+
+    let data: AgentProviderRow;
+    try {
+      data = (await prisma.agent_providers.update({ where: { id }, data: update })) as unknown as AgentProviderRow;
+    } catch (err) {
+      if (isNotFound(err)) throw notFound("Provider not found");
+      throw err;
+    }
+
+    res.json(toPublic(data));
   }),
 );
 
