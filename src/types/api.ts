@@ -20,6 +20,12 @@ export interface RequestMessage {
 
 export interface ServiceRequest {
   id: string;
+  ticketNumber: number;
+  /** resolv-hq-customer reads this directly (e.g. RequestCard, request/[id].tsx
+   * render `#{request.code}`) — it typed the API response as its own
+   * ServiceRequest with no mapping layer, so this field was silently always
+   * undefined until now. */
+  code: string;
   title: string;
   category: string;
   categoryId?: string | null;
@@ -28,12 +34,21 @@ export interface ServiceRequest {
   priority: AppRequestPriority;
   createdAt: string;
   updatedAt: string;
+  resolvedAt?: string | null;
+  closedAt?: string | null;
+  aiHandled: boolean;
   messages: RequestMessage[];
   timeline: TimelineStep[];
   customerId?: string;
   customerName?: string | null;
   assignedAgentId?: string | null;
   assignedAgentName?: string | null;
+  /** Aliases of the two fields above — resolv-hq-customer's (agent)/queue.tsx
+   * and ticket/[id].tsx read assignedAdminId/assignedAdminName specifically
+   * (isMine, "Assign to me" visibility), so those were silently always
+   * undefined/broken until this was added. */
+  assignedAdminId?: string | null;
+  assignedAdminName?: string | null;
 }
 
 export interface RequestCategoryOption {

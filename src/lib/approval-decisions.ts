@@ -16,8 +16,9 @@ export async function decideApproval(
   user: { id: string },
   note?: string,
 ) {
+  let approval;
   try {
-    return await prisma.agent_approvals.update({
+    approval = await prisma.agent_approvals.update({
       where: { id: approvalId },
       data: {
         status: decision,
@@ -30,4 +31,14 @@ export async function decideApproval(
     if (isNotFound(err)) throw notFound("Approval not found");
     throw err;
   }
+
+  // The run itself was left "awaiting_approval" when the draft was created —
+  // this is the only place its outcome is known, so it's the only place
+  // that can close it out.
+  await prisma.agent_runs.updateMany({
+    where: { id: approval.agent_run_id },
+    data: { status: decision === "approved" ? "completed" : "failed", completed_at: new Date() },
+  });
+
+  return approval;
 }

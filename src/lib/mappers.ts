@@ -75,6 +75,8 @@ export function mapRequestRow(
 ): ServiceRequest {
   return {
     id: row.id,
+    ticketNumber: Number(row.ticket_number),
+    code: String(row.ticket_number),
     title: row.title,
     category: categoryName ?? "General Inquiry",
     categoryId: row.category_id,
@@ -83,12 +85,17 @@ export function mapRequestRow(
     priority: priorityFromDb(row.priority),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    resolvedAt: row.resolved_at,
+    closedAt: row.closed_at,
+    aiHandled: row.ai_handled,
     messages: [],
     timeline: buildTimeline([], row.created_at, new Map()),
     customerId: row.customer_id,
     customerName: staffExtra?.customerName ?? null,
     assignedAgentId: row.assigned_agent_id,
     assignedAgentName: staffExtra?.assignedAgentName ?? null,
+    assignedAdminId: row.assigned_agent_id,
+    assignedAdminName: staffExtra?.assignedAgentName ?? null,
   };
 }
 

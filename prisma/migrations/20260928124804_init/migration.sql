@@ -1,10 +1,24 @@
 -- CreateSchema
 CREATE SCHEMA IF NOT EXISTS "public";
 
--- Note: the "auth" schema, its enums, and its tables (users, sessions, etc.)
+-- Note: the "auth" schema and its real tables (sessions, identities, etc.)
 -- are Supabase-managed and deliberately omitted here — see the `authTables`
--- comment in prisma.config.ts. They already exist on any real Supabase
--- project this migration runs against; the FK below relies on that.
+-- comment in prisma.config.ts. On the real Supabase project both already
+-- exist, so the two statements below are no-ops there; they only matter for
+-- a from-scratch database (a fresh shadow DB, or `migrate reset` locally),
+-- which has no "auth" schema at all — this keeps the migration replayable
+-- in both places instead of failing when the FK below needs "auth"."users".
+CREATE SCHEMA IF NOT EXISTS "auth";
+CREATE TABLE IF NOT EXISTS "auth"."users" (
+    "id" UUID NOT NULL,
+    CONSTRAINT "users_pkey" PRIMARY KEY ("id")
+);
+
+-- Extensions Supabase pre-installs on every project, but a fresh shadow/dev
+-- database (spun up by `prisma migrate dev`/`reset`) does not have — needed
+-- for uuid_generate_v4() defaults below and the pgvector "embedding" column.
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "vector";
 
 -- CreateTable
 CREATE TABLE "admin_profiles" (

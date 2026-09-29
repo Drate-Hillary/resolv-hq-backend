@@ -4,6 +4,7 @@ import { requireRole } from "../lib/auth.js";
 import { badRequest, notFound } from "../lib/errors.js";
 import { buildTimeline, mapMessageRow, mapRequestRow, priorityToDb, resolveCategoryId } from "../lib/mappers.js";
 import { assertRequestAccess } from "../lib/ownership.js";
+import { isNotFound } from "../lib/prisma-errors.js";
 import { finalStatusIds, loadStatuses, statusIdByName } from "../lib/statuses.js";
 import { prisma } from "../lib/prisma.js";
 import { asyncRoute } from "../middleware/error-handler.js";
@@ -227,6 +228,25 @@ router.patch(
       },
     });
 
+    res.json(await loadRequestDetail(req.params.id, req.user!));
+  }),
+);
+
+/** Closing is a distinct, explicit staff action from resolving — a request
+ * can be "completed" for a while before staff close it out. Idempotent. */
+router.patch(
+  "/:id/close",
+  requireRole("staff"),
+  asyncRoute(async (req: Request, res: Response) => {
+    try {
+      await prisma.requests.update({
+        where: { id: req.params.id },
+        data: { closed_at: new Date() },
+      });
+    } catch (err) {
+      if (isNotFound(err)) throw notFound("Request not found");
+      throw err;
+    }
     res.json(await loadRequestDetail(req.params.id, req.user!));
   }),
 );
