@@ -415,6 +415,7 @@ export interface Database {
           title: string;
           message: string;
           is_read: boolean;
+          type: string;
           created_at: string;
         };
         Insert: {
@@ -424,6 +425,7 @@ export interface Database {
           title: string;
           message: string;
           is_read?: boolean;
+          type?: string;
           created_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["notifications"]["Insert"]>;

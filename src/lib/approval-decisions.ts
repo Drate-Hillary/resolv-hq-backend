@@ -6,6 +6,7 @@
 import { prisma } from "./prisma.js";
 import { isNotFound } from "./prisma-errors.js";
 import { notFound } from "./errors.js";
+import { notifyUsers } from "./notify.js";
 import type { ApprovalStatus } from "../types/database.types.js";
 
 export type ApprovalDecision = Extract<ApprovalStatus, "approved" | "rejected">;
@@ -35,10 +36,28 @@ export async function decideApproval(
   // The run itself was left "awaiting_approval" when the draft was created —
   // this is the only place its outcome is known, so it's the only place
   // that can close it out.
-  await prisma.agent_runs.updateMany({
+  const run = await prisma.agent_runs.update({
     where: { id: approval.agent_run_id },
     data: { status: decision === "approved" ? "completed" : "failed", completed_at: new Date() },
+    select: { customer_id: true, request_id: true },
   });
+
+  // Whoever the assistant was talking to hears the outcome.
+  await notifyUsers(
+    [run.customer_id],
+    {
+      type: "ai",
+      title: decision === "approved" ? "Escalation approved" : "Escalation declined",
+      message:
+        decision === "approved"
+          ? "Our team approved the escalation and will follow up with you."
+          : note
+            ? `Our team reviewed your escalation and declined it: ${note}`
+            : "Our team reviewed your escalation and decided not to proceed with it.",
+      requestId: run.request_id,
+    },
+    user.id,
+  );
 
   return approval;
 }

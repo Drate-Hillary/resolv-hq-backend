@@ -111,6 +111,7 @@ export function mapMessageRow(row: RequestMessageRow): RequestMessage {
 export function mapNotificationRow(row: NotificationRow): AppNotification {
   return {
     id: row.id,
+    type: row.type as AppNotification["type"],
     title: row.title,
     body: row.message,
     createdAt: row.created_at,

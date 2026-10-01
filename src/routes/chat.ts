@@ -3,6 +3,7 @@ import { formatEscalationDraft, type EscalationDraft } from "../lib/agent-tools.
 import { generateAssistantReply, type AiAccountInput, type AiKnowledgeInput, type AiRequestInput } from "../lib/ai.js";
 import { badRequest, notFound } from "../lib/errors.js";
 import { formatMemberSince, mapChatMessageRow, mapConversationRow } from "../lib/mappers.js";
+import { notifyStaff } from "../lib/notify.js";
 import { assertConversationAccess } from "../lib/ownership.js";
 import { SYSTEM_PROMPT_VERSION } from "../lib/prompts/system-prompt.js";
 import { finalStatusIds, loadStatuses } from "../lib/statuses.js";
@@ -168,6 +169,14 @@ router.post(
         },
       });
       escalation = { approvalId: approval.id, runId: run.id, ...answer.escalationDraft };
+      await notifyStaff(
+        {
+          type: "ai",
+          title: "Approval needed",
+          message: `The assistant drafted an escalation: ${answer.escalationDraft.title}`,
+        },
+        user.id,
+      );
     }
 
     res.status(201).json({
