@@ -3,6 +3,7 @@ import { formatEscalationDraft, type EscalationDraft } from "../lib/agent-tools.
 import { generateAssistantReply, type AiAccountInput, type AiKnowledgeInput, type AiRequestInput } from "../lib/ai.js";
 import { badRequest, notFound } from "../lib/errors.js";
 import { formatMemberSince, mapChatMessageRow, mapConversationRow } from "../lib/mappers.js";
+import { loadPublishedPassages } from "../lib/knowledge-index.js";
 import { notifyStaff } from "../lib/notify.js";
 import { assertConversationAccess } from "../lib/ownership.js";
 import { SYSTEM_PROMPT_VERSION } from "../lib/prompts/system-prompt.js";
@@ -115,7 +116,7 @@ router.post(
     const finalIds = await finalStatusIds();
 
     const [docs, requests, account] = await Promise.all([
-      prisma.knowledge_documents.findMany({ where: { status: "published" } }),
+      loadPublishedPassages(),
       (isStaff(user.role)
         ? prisma.requests.findMany({
             where: finalIds.length > 0 ? { status_id: { notIn: finalIds } } : undefined,
@@ -124,11 +125,9 @@ router.post(
       loadAccountInput(user.id, user.role),
     ]);
 
-    const knowledgeInputs: AiKnowledgeInput[] = docs.map((d) => ({
-      id: d.id,
-      title: d.title,
-      content: d.content ?? "",
-    }));
+    // Page-level passages, not whole documents: the agent retrieves the
+    // relevant bit and answers from it (see lib/knowledge-index.ts).
+    const knowledgeInputs: AiKnowledgeInput[] = docs;
     const requestInputs: AiRequestInput[] = requests.map((r) => ({
       id: r.id,
       title: r.title,
@@ -187,7 +186,7 @@ router.post(
       sources: answer.sources,
       trace: answer.trace ?? [],
       fallbackReason: answer.fallbackReason ?? null,
-      knowledgeCount: knowledgeInputs.length,
+      knowledgeCount: new Set(knowledgeInputs.map((k) => k.id)).size,
       openRequestCount: requestInputs.length,
       escalation,
     });

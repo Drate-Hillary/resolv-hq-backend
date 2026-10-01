@@ -1,18 +1,36 @@
 import { Router, type Request, type Response } from "express";
+import multer from "multer";
 import { classifyRequest } from "../lib/ai.js";
 import { requireRole } from "../lib/auth.js";
 import { badRequest, notFound } from "../lib/errors.js";
-import { buildTimeline, mapMessageRow, mapRequestRow, priorityToDb, resolveCategoryId } from "../lib/mappers.js";
+import {
+  getAttachmentSignedUrl,
+  isAllowedAttachmentType,
+  MAX_ATTACHMENT_BYTES,
+  uploadAttachmentFile,
+} from "../lib/attachment-storage.js";
+import { buildTimeline, mapAttachmentRow, mapMessageRow, mapRequestRow, priorityToDb, resolveCategoryId } from "../lib/mappers.js";
 import { notifyStaff, notifyUsers } from "../lib/notify.js";
 import { assertRequestAccess } from "../lib/ownership.js";
 import { isNotFound } from "../lib/prisma-errors.js";
 import { finalStatusIds, loadStatuses, statusIdByName } from "../lib/statuses.js";
 import { prisma } from "../lib/prisma.js";
 import { asyncRoute } from "../middleware/error-handler.js";
-import type { RequestCategoryOption } from "../types/api.js";
+import type { RequestAttachment, RequestCategoryOption } from "../types/api.js";
 import type { RequestMessageRow, RequestRow, RequestStatusHistoryRow } from "../types/database.types.js";
 
 const router = Router();
+
+const attachmentUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_ATTACHMENT_BYTES } });
+
+/** A request's attachments, newest last, each with a fresh short-lived signed URL. */
+async function loadAttachments(requestId: string): Promise<RequestAttachment[]> {
+  const rows = await prisma.request_attachments.findMany({
+    where: { request_id: requestId },
+    orderBy: { created_at: "asc" },
+  });
+  return Promise.all(rows.map(async (row) => mapAttachmentRow(row, await getAttachmentSignedUrl(row.storage_path))));
+}
 
 function isStaff(role: string): boolean {
   return role === "admin" || role === "agent";
@@ -50,7 +68,7 @@ async function loadRequestDetail(id: string, user: { role: string }) {
   const statuses = await loadStatuses();
   const statusNameById = new Map(statuses.map((s) => [s.id, s.name]));
 
-  const [row, categories, messages, history] = await Promise.all([
+  const [row, categories, messages, history, attachments] = await Promise.all([
     prisma.requests.findUnique({ where: { id } }) as unknown as Promise<RequestRow | null>,
     loadCategories(),
     prisma.request_messages.findMany({
@@ -61,6 +79,7 @@ async function loadRequestDetail(id: string, user: { role: string }) {
       where: { request_id: id },
       orderBy: { created_at: "asc" },
     }) as unknown as Promise<RequestStatusHistoryRow[]>,
+    loadAttachments(id),
   ]);
   if (!row) throw notFound("Request not found");
 
@@ -79,7 +98,11 @@ async function loadRequestDetail(id: string, user: { role: string }) {
 
   return {
     ...mapRequestRow(row, categoryName, statusName, staffExtra),
-    messages: messages.map(mapMessageRow),
+    messages: messages.map((msg) => ({
+      ...mapMessageRow(msg),
+      attachments: attachments.filter((a) => a.messageId === msg.id),
+    })),
+    attachments,
     timeline: buildTimeline(history, row.created_at, statusNameById),
   };
 }
@@ -294,6 +317,84 @@ router.patch(
       );
     }
     res.json(await loadRequestDetail(req.params.id, req.user!));
+  }),
+);
+
+/**
+ * Upload a file to a request (optionally tied to one of its messages).
+ * Customers can only attach to their own requests (assertRequestAccess);
+ * uploaded_by is always req.user, never client-supplied.
+ */
+router.post(
+  "/:id/attachments",
+  attachmentUpload.single("file"),
+  asyncRoute(async (req: Request, res: Response) => {
+    const user = req.user!;
+    const access = await assertRequestAccess(req.params.id, user);
+    const file = req.file;
+    if (!file) throw badRequest("A file is required");
+    if (!isAllowedAttachmentType(file.mimetype)) {
+      throw badRequest("That file type isn't supported — attach an image, PDF, text, Word or Excel file.");
+    }
+
+    const messageIdInput = (req.body as { messageId?: string }).messageId;
+    let messageId: string | null = null;
+    if (messageIdInput) {
+      const message = await prisma.request_messages.findFirst({
+        where: { id: messageIdInput, request_id: req.params.id },
+        select: { id: true },
+      });
+      if (!message) throw badRequest("messageId does not belong to this request");
+      messageId = message.id;
+    }
+
+    const storagePath = await uploadAttachmentFile(req.params.id, file.buffer, file.originalname, file.mimetype);
+    const row = await prisma.request_attachments.create({
+      data: {
+        request_id: req.params.id,
+        message_id: messageId,
+        uploaded_by: user.id,
+        file_name: file.originalname,
+        file_type: file.mimetype,
+        file_size_bytes: file.size,
+        storage_path: storagePath,
+      },
+    });
+
+    // Files uploaded while a request is being filed are already covered by
+    // the "new request" notification; anything added afterwards is news for
+    // whoever is handling it (or, if staff attached it, for the customer).
+    const info = await prisma.requests.findUnique({
+      where: { id: req.params.id },
+      select: { assigned_agent_id: true, created_at: true },
+    });
+    const justFiled = info?.created_at ? Date.now() - info.created_at.getTime() < 2 * 60 * 1000 : false;
+    if (isStaff(user.role)) {
+      await notifyUsers(
+        [access.customer_id],
+        { type: "support", title: "New attachment", message: `${file.originalname} was added to your request.`, requestId: req.params.id },
+        user.id,
+      );
+    } else if (!justFiled) {
+      const note = {
+        type: "support" as const,
+        title: "New attachment",
+        message: `${file.originalname} was added to a request.`,
+        requestId: req.params.id,
+      };
+      if (info?.assigned_agent_id) await notifyUsers([info.assigned_agent_id], note, user.id);
+      else await notifyStaff(note, user.id);
+    }
+
+    res.status(201).json(mapAttachmentRow(row, await getAttachmentSignedUrl(storagePath)));
+  }),
+);
+
+router.get(
+  "/:id/attachments",
+  asyncRoute(async (req: Request, res: Response) => {
+    await assertRequestAccess(req.params.id, req.user!);
+    res.json(await loadAttachments(req.params.id));
   }),
 );
 

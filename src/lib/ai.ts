@@ -13,11 +13,15 @@ import { detectBoundaryViolation } from "./ai-boundary.js";
 import { checkForClarification } from "./clarification.js";
 import { buildSystemPrompt } from "./prompts/system-prompt.js";
 import { runReActLoop, type ReActStep } from "./react-agent.js";
+import { queryTerms, scoreText } from "./text-match.js";
 
+/** One retrievable passage of a knowledge document (see lib/knowledge-index.ts) — not the whole document. */
 export interface AiKnowledgeInput {
+  /** The owning document's id. Several passages can share one. */
   id: string;
   title: string;
   content: string;
+  page?: number;
 }
 
 export interface AiRequestInput {
@@ -37,7 +41,7 @@ export interface AiAccountInput {
 
 export interface AiAnswer {
   text: string;
-  sources: { id: string; title: string; score?: number }[];
+  sources: { id: string; title: string; score?: number; pages?: number[] }[];
   suggestions: string[];
   steps: string[];
   /** Structured Plan/Act/Observe trace of the ReAct loop — `steps` above is
@@ -71,6 +75,29 @@ function scoreArticle(query: string, haystack: string): number {
   return score;
 }
 
+/**
+ * The few sentences of a passage that actually speak to the question, in
+ * their original order — what the keyword fallback returns instead of the
+ * whole passage (the model path does this itself, guided by the prompt).
+ */
+export function bestSentences(query: string, passage: string, max = 3): string {
+  const terms = queryTerms(query);
+  const sentences = passage.match(/[^.!?]+[.!?]+(?:\s|$)|[^.!?]+$/g)?.map((x) => x.trim()) ?? [passage];
+  const scored = sentences
+    .map((sentence, index) => ({
+      sentence,
+      index,
+      score: terms.filter((t) => sentence.toLowerCase().includes(t)).length,
+    }))
+    .filter((x) => x.score > 0)
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .slice(0, max)
+    .sort((a, b) => a.index - b.index);
+
+  if (scored.length === 0) return passage.slice(0, 300);
+  return scored.map((x) => x.sentence).join(" ");
+}
+
 export function answerQuestion(
   query: string,
   knowledge: AiKnowledgeInput[],
@@ -94,7 +121,7 @@ export function answerQuestion(
   const ranked = knowledge
     .map((doc) => ({
       doc,
-      score: scoreArticle(lower, `${doc.title} ${doc.content}`),
+      score: scoreText(lower, `${doc.title} ${doc.content}`),
     }))
     .filter((r) => r.score > 0)
     .sort((a, b) => b.score - a.score);
@@ -102,8 +129,8 @@ export function answerQuestion(
   if (ranked.length > 0) {
     const top = ranked[0].doc;
     return {
-      text: top.content.slice(0, 500),
-      sources: [{ id: top.id, title: top.title }],
+      text: bestSentences(query, top.content),
+      sources: toSources(ranked.slice(0, 1)).map(({ id, title, pages }) => ({ id, title, pages })),
       suggestions: ranked
         .slice(1, 3)
         .map((r) => r.doc.title)
@@ -135,9 +162,25 @@ export function answerQuestion(
 /** Knowledge documents that actually match the query, best first. Used for
  * both the prompt context and the reported sources, so what the model was
  * shown and what the UI says was retrieved are the same set. */
+/** Collapses ranked passages into distinct source documents (best first), keeping which pages matched. */
+function toSources(
+  ranked: { doc: AiKnowledgeInput; score: number }[],
+  limit = 3,
+): { id: string; title: string; score: number; pages: number[] }[] {
+  const byDoc = new Map<string, { id: string; title: string; score: number; pages: number[] }>();
+  for (const { doc, score } of ranked) {
+    const entry = byDoc.get(doc.id) ?? { id: doc.id, title: doc.title, score, pages: [] };
+    if (doc.page && !entry.pages.includes(doc.page)) entry.pages.push(doc.page);
+    byDoc.set(doc.id, entry);
+  }
+  return Array.from(byDoc.values())
+    .slice(0, limit)
+    .map((e) => ({ ...e, pages: e.pages.sort((a, b) => a - b) }));
+}
+
 function rankKnowledge(query: string, knowledge: AiKnowledgeInput[]): { doc: AiKnowledgeInput; score: number }[] {
   return knowledge
-    .map((doc) => ({ doc, score: scoreArticle(query, `${doc.title} ${doc.content}`) }))
+    .map((doc) => ({ doc, score: scoreText(query, `${doc.title} ${doc.content}`) }))
     .filter((r) => r.score > 0)
     .sort((a, b) => b.score - a.score);
 }
@@ -181,7 +224,7 @@ export async function generateAssistantReply(
     const ranked = rankKnowledge(query, knowledge);
     const knowledgeContext = ranked
       .slice(0, 5)
-      .map(({ doc: d }) => `### ${d.title}\n${d.content.slice(0, 800)}`)
+      .map(({ doc: d }) => `### ${d.title}${d.page ? ` (page ${d.page})` : ""}\n${d.content.slice(0, 800)}`)
       .join("\n\n");
     const requestContext = activeRequests
       .slice(0, 5)
@@ -221,7 +264,7 @@ export async function generateAssistantReply(
 
     return {
       text: violation ? violation.fallbackMessage : result.content,
-      sources: ranked.slice(0, 3).map(({ doc, score }) => ({ id: doc.id, title: doc.title, score })),
+      sources: toSources(ranked),
       suggestions: [],
       steps: [
         DEFAULT_STEPS[0],

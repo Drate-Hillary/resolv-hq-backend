@@ -18,6 +18,7 @@
 import { classifyRequest } from "./classify.js";
 import type { AiAccountInput, AiKnowledgeInput, AiRequestInput } from "./ai.js";
 import type { LlmToolDefinition } from "./llm/types.js";
+import { scoreText } from "./text-match.js";
 
 export const AGENT_TOOL_DEFINITIONS: LlmToolDefinition[] = [
   {
@@ -91,28 +92,18 @@ export interface EscalationDraft {
   suggestedAction: string | null;
 }
 
-function scoreMatch(query: string, haystack: string): number {
-  const words = query
-    .toLowerCase()
-    .split(/\W+/)
-    .filter((w) => w.length > 2);
-  let score = 0;
-  for (const w of words) {
-    if (haystack.toLowerCase().includes(w)) score += 1;
-  }
-  return score;
-}
-
 function searchKnowledgeBase(args: Record<string, unknown>, knowledge: AiKnowledgeInput[]): string {
   const query = typeof args.query === "string" ? args.query : "";
   const ranked = knowledge
-    .map((doc) => ({ doc, score: scoreMatch(query, `${doc.title} ${doc.content}`) }))
+    .map((doc) => ({ doc, score: scoreText(query,`${doc.title} ${doc.content}`) }))
     .filter((r) => r.score > 0)
     .sort((a, b) => b.score - a.score)
     .slice(0, 3);
 
   if (ranked.length === 0) return "No matching knowledge base articles found.";
-  return ranked.map((r) => `### ${r.doc.title}\n${r.doc.content.slice(0, 500)}`).join("\n\n");
+  return ranked
+    .map((r) => `### ${r.doc.title}${r.doc.page ? ` (page ${r.doc.page})` : ""}\n${r.doc.content.slice(0, 500)}`)
+    .join("\n\n");
 }
 
 function accountStatusLookup(account: AiAccountInput): string {
