@@ -20,6 +20,7 @@ import type {
   HelpArticleOut,
   MemoryFact,
   RequestCategoryOption,
+  RequestAttachment,
   RequestMessage,
   ServiceRequest,
   TimelineStep,
@@ -108,6 +109,30 @@ export function mapMessageRow(row: RequestMessageRow): RequestMessage {
   };
 }
 
+export function mapAttachmentRow(
+  row: {
+    id: string;
+    file_name: string;
+    file_type: string | null;
+    file_size_bytes: number | null;
+    created_at: Date | null;
+    message_id: string | null;
+    uploaded_by: string | null;
+  },
+  fileUrl: string,
+): RequestAttachment {
+  return {
+    id: row.id,
+    fileUrl,
+    fileName: row.file_name,
+    fileType: row.file_type,
+    fileSizeBytes: row.file_size_bytes,
+    createdAt: (row.created_at ?? new Date()).toISOString(),
+    messageId: row.message_id,
+    uploadedBy: row.uploaded_by,
+  };
+}
+
 export function mapNotificationRow(row: NotificationRow): AppNotification {
   return {
     id: row.id,
@@ -180,6 +205,8 @@ export function mapKnowledgeDocumentToHelpArticle(
       ],
     source: "Resolv HQ Knowledge Base",
     readMinutes: Math.max(1, Math.round(words / 200)),
+    hasFile: Boolean(row.file_url),
+    fileType: row.file_type ?? null,
   };
 }
 

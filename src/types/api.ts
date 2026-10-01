@@ -11,11 +11,24 @@ export interface TimelineStep {
   timestamp?: string;
 }
 
+/** A file attached to a request. `fileUrl` is a short-lived signed URL — safe to render or open, not to store. */
+export interface RequestAttachment {
+  id: string;
+  fileUrl: string;
+  fileName: string;
+  fileType: string | null;
+  fileSizeBytes: number | null;
+  createdAt: string;
+  messageId?: string | null;
+  uploadedBy?: string | null;
+}
+
 export interface RequestMessage {
   id: string;
   sender: MessageSenderType;
   text: string;
   timestamp: string;
+  attachments?: RequestAttachment[];
 }
 
 export interface ServiceRequest {
@@ -38,6 +51,7 @@ export interface ServiceRequest {
   closedAt?: string | null;
   aiHandled: boolean;
   messages: RequestMessage[];
+  attachments?: RequestAttachment[];
   timeline: TimelineStep[];
   customerId?: string;
   customerName?: string | null;
@@ -117,4 +131,7 @@ export interface HelpArticleOut {
   body: string[];
   source: string;
   readMinutes: number;
+  /** True when the original file (PDF etc.) can be opened via GET /knowledge/:id/file. */
+  hasFile: boolean;
+  fileType: string | null;
 }

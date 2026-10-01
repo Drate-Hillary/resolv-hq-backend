@@ -5,6 +5,7 @@ import multer from "multer";
 import { requireRole } from "../../lib/auth.js";
 import { badRequest, notFound } from "../../lib/errors.js";
 import { deleteKnowledgeFile, getKnowledgeFileSignedUrl, uploadKnowledgeFile } from "../../lib/knowledge-storage.js";
+import { extractPages, indexPages, isIndexable, reindexDocument } from "../../lib/knowledge-index.js";
 import { isNotFound } from "../../lib/prisma-errors.js";
 import { prisma } from "../../lib/prisma.js";
 import { asyncRoute } from "../../middleware/error-handler.js";
@@ -74,6 +75,18 @@ router.post(
       data: { title, content, file_url, file_type, status, category_id, uploaded_by: req.user!.id },
     });
 
+    // Make the document readable by the agent: split it page by page into
+    // searchable passages. A failure here must not fail the upload — the file
+    // is stored either way, and staff can re-run indexing from the console.
+    if (file && isIndexable(file.mimetype, file.originalname)) {
+      try {
+        const pages = await extractPages(file.buffer, file.mimetype, file.originalname);
+        await indexPages(data.id, pages);
+      } catch (indexError) {
+        console.error("knowledge indexing failed:", indexError);
+      }
+    }
+
     res.json(data);
 
     setTimeout(() => {
@@ -115,6 +128,19 @@ router.patch(
     }
 
     res.json(data);
+  }),
+);
+
+/** Rebuilds the document's searchable passages from its stored file. */
+router.post(
+  "/:id/reindex",
+  asyncRoute(async (req: Request, res: Response) => {
+    try {
+      res.json(await reindexDocument(req.params.id));
+    } catch (err) {
+      if (err instanceof Error && err.message === "Document not found") throw notFound("Document not found");
+      throw err;
+    }
   }),
 );
 

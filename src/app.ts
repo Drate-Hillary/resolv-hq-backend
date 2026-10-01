@@ -13,6 +13,7 @@ import memoryRouter from "./routes/memory.js";
 import chatRouter from "./routes/chat.js";
 import aiRouter from "./routes/ai.js";
 
+import knowledgeRouter from "./routes/knowledge.js";
 import adminDashboardRouter from "./routes/admin/dashboard.js";
 import adminKnowledgeRouter from "./routes/admin/knowledge.js";
 import adminKnowledgeCategoriesRouter from "./routes/admin/knowledge-categories.js";
@@ -54,6 +55,7 @@ export function createApp() {
   // gateway, so it's the one actually exposed to provider rate limits/cost.
   app.use("/chat", rateLimit({ keyPrefix: "chat", max: 20, windowMs: 60 * 1000 }), chatRouter);
   app.use("/ai", aiRouter);
+  app.use("/knowledge", knowledgeRouter);
 
   app.use("/admin/dashboard", adminDashboardRouter);
   app.use("/admin/knowledge", adminKnowledgeRouter);

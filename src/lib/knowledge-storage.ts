@@ -33,3 +33,10 @@ export async function deleteKnowledgeFile(path: string): Promise<void> {
   const { error } = await supabaseAdmin.storage.from(KNOWLEDGE_BUCKET).remove([path]);
   if (error) throw error;
 }
+
+/** Raw bytes of a stored file — used to (re)build the document's searchable passages. */
+export async function downloadKnowledgeFile(path: string): Promise<Buffer> {
+  const { data, error } = await supabaseAdmin.storage.from(KNOWLEDGE_BUCKET).download(path);
+  if (error || !data) throw error ?? new Error("Could not download the file");
+  return Buffer.from(await data.arrayBuffer());
+}
