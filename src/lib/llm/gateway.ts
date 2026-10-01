@@ -15,6 +15,7 @@ import { createHash } from "node:crypto";
 import { redis } from "../redis.js";
 import { prisma } from "../prisma.js";
 import { AnthropicClient } from "./providers/anthropic.js";
+import { GoogleClient } from "./providers/google.js";
 import { OpenAiClient } from "./providers/openai.js";
 import { withRetry } from "./retry.js";
 import type { LlmClient, LlmMessage, LlmToolCall, LlmToolDefinition } from "./types.js";
@@ -42,8 +43,10 @@ function buildClient(row: { provider: string; model: string | null; api_key: str
       return new OpenAiClient(row.api_key, row.model);
     case "anthropic":
       return new AnthropicClient(row.api_key, row.model);
+    case "google":
+      return new GoogleClient(row.api_key, row.model);
     default:
-      // "google" / "custom" are registerable today but have no client
+      // "custom" is registerable today but has no client
       // implementation yet — add a providers/<name>.ts and a case here.
       return null;
   }
