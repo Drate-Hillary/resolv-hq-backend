@@ -24,6 +24,10 @@ export interface LlmToolCall {
    * and the caller (lib/react-agent.ts) should report the failure back to
    * the model rather than execute the tool with guessed-at arguments. */
   argumentsParseError?: string;
+  /** Opaque provider-specific data that must be echoed back with the call
+   * on the next turn (Gemini's thoughtSignature) — callers pass it through
+   * untouched. */
+  providerMeta?: string;
 }
 
 export type LlmMessage =

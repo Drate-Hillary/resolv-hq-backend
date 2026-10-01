@@ -11,9 +11,8 @@
 import type { EscalationDraft } from "./agent-tools.js";
 import { detectBoundaryViolation } from "./ai-boundary.js";
 import { checkForClarification } from "./clarification.js";
-import { GatewayUnavailableError } from "./llm/gateway.js";
 import { buildSystemPrompt } from "./prompts/system-prompt.js";
-import { runReActLoop } from "./react-agent.js";
+import { runReActLoop, type ReActStep } from "./react-agent.js";
 
 export interface AiKnowledgeInput {
   id: string;
@@ -38,9 +37,15 @@ export interface AiAccountInput {
 
 export interface AiAnswer {
   text: string;
-  sources: { id: string; title: string }[];
+  sources: { id: string; title: string; score?: number }[];
   suggestions: string[];
   steps: string[];
+  /** Structured Plan/Act/Observe trace of the ReAct loop — `steps` above is
+   * the same information flattened to display strings. */
+  trace?: ReActStep[];
+  /** Set when the model call failed and this answer came from the keyword
+   * fallback instead — why it did, so the console can say so. */
+  fallbackReason?: string;
   /** Set when the assistant drafted an escalation ticket this turn — the
    * caller (routes/chat.ts) persists it as an agent_approvals row so a human
    * can actually review it; it is never filed on the model's say-so. */
@@ -127,6 +132,16 @@ export function answerQuestion(
  * deterministic answerQuestion() if no provider is configured or every
  * provider call fails.
  */
+/** Knowledge documents that actually match the query, best first. Used for
+ * both the prompt context and the reported sources, so what the model was
+ * shown and what the UI says was retrieved are the same set. */
+function rankKnowledge(query: string, knowledge: AiKnowledgeInput[]): { doc: AiKnowledgeInput; score: number }[] {
+  return knowledge
+    .map((doc) => ({ doc, score: scoreArticle(query, `${doc.title} ${doc.content}`) }))
+    .filter((r) => r.score > 0)
+    .sort((a, b) => b.score - a.score);
+}
+
 function bestKnowledgeScore(query: string, knowledge: AiKnowledgeInput[]): number {
   return knowledge.reduce((max, doc) => Math.max(max, scoreArticle(query, `${doc.title} ${doc.content}`)), 0);
 }
@@ -163,9 +178,10 @@ export async function generateAssistantReply(
   }
 
   try {
-    const knowledgeContext = knowledge
+    const ranked = rankKnowledge(query, knowledge);
+    const knowledgeContext = ranked
       .slice(0, 5)
-      .map((d) => `### ${d.title}\n${d.content.slice(0, 800)}`)
+      .map(({ doc: d }) => `### ${d.title}\n${d.content.slice(0, 800)}`)
       .join("\n\n");
     const requestContext = activeRequests
       .slice(0, 5)
@@ -205,7 +221,7 @@ export async function generateAssistantReply(
 
     return {
       text: violation ? violation.fallbackMessage : result.content,
-      sources: knowledge.slice(0, 3).map((d) => ({ id: d.id, title: d.title })),
+      sources: ranked.slice(0, 3).map(({ doc, score }) => ({ id: doc.id, title: doc.title, score })),
       suggestions: [],
       steps: [
         DEFAULT_STEPS[0],
@@ -213,13 +229,13 @@ export async function generateAssistantReply(
         ...traceSteps,
         violation ? "Blocked a boundary-matrix violation" : undefined,
       ].filter((s): s is string => Boolean(s)),
+      trace: result.trace,
       escalationDraft: result.escalationDraft,
     };
   } catch (err) {
-    if (!(err instanceof GatewayUnavailableError)) {
-      console.error("LLM gateway call failed unexpectedly, falling back to keyword search:", err);
-    }
-    return answerQuestion(query, knowledge, activeRequests);
+    const reason = err instanceof Error ? err.message : String(err);
+    console.error(`LLM gateway unavailable, falling back to keyword search: ${reason}`);
+    return { ...answerQuestion(query, knowledge, activeRequests), fallbackReason: reason };
   }
 }
 
