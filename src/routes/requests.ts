@@ -3,6 +3,7 @@ import { classifyRequest } from "../lib/ai.js";
 import { requireRole } from "../lib/auth.js";
 import { badRequest, notFound } from "../lib/errors.js";
 import { buildTimeline, mapMessageRow, mapRequestRow, priorityToDb, resolveCategoryId } from "../lib/mappers.js";
+import { notifyStaff, notifyUsers } from "../lib/notify.js";
 import { assertRequestAccess } from "../lib/ownership.js";
 import { isNotFound } from "../lib/prisma-errors.js";
 import { finalStatusIds, loadStatuses, statusIdByName } from "../lib/statuses.js";
@@ -170,6 +171,17 @@ router.post(
     })) as unknown as RequestMessageRow;
 
     const categoryName = categories.find((c) => c.id === resolvedCategoryId)?.name ?? category;
+
+    await notifyStaff(
+      {
+        type: "request_update",
+        title: priority === "high" ? "New high-priority request" : "New request",
+        message: `${categoryName}: ${description.slice(0, 120)}`,
+        requestId: requestRow.id,
+      },
+      userId,
+    );
+
     res.status(201).json({
       ...mapRequestRow(requestRow, categoryName, "submitted"),
       messages: [mapMessageRow(messageRow)],
@@ -219,14 +231,16 @@ router.patch(
       },
     });
 
-    await prisma.notifications.create({
-      data: {
-        user_id: current.customer_id,
-        request_id: req.params.id,
-        title: "Request updated",
+    await notifyUsers(
+      [current.customer_id],
+      {
+        type: finalIds.includes(newStatusId) ? "completed" : "request_update",
+        title: finalIds.includes(newStatusId) ? "Request completed" : "Request updated",
         message: `Your request is now "${status}".`,
+        requestId: req.params.id,
       },
-    });
+      req.user!.id,
+    );
 
     res.json(await loadRequestDetail(req.params.id, req.user!));
   }),
@@ -238,15 +252,22 @@ router.patch(
   "/:id/close",
   requireRole("staff"),
   asyncRoute(async (req: Request, res: Response) => {
+    let closed;
     try {
-      await prisma.requests.update({
+      closed = await prisma.requests.update({
         where: { id: req.params.id },
         data: { closed_at: new Date() },
+        select: { customer_id: true },
       });
     } catch (err) {
       if (isNotFound(err)) throw notFound("Request not found");
       throw err;
     }
+    await notifyUsers(
+      [closed.customer_id],
+      { type: "completed", title: "Request closed", message: "Your request has been closed by our team.", requestId: req.params.id },
+      req.user!.id,
+    );
     res.json(await loadRequestDetail(req.params.id, req.user!));
   }),
 );
@@ -256,10 +277,22 @@ router.patch(
   "/:id/assign",
   requireRole("staff"),
   asyncRoute(async (req: Request, res: Response) => {
+    const before = await prisma.requests.findUnique({
+      where: { id: req.params.id },
+      select: { customer_id: true, assigned_agent_id: true },
+    });
     await prisma.requests.updateMany({
       where: { id: req.params.id },
       data: { assigned_agent_id: req.user!.id },
     });
+    // Only announce a real change of owner, not an agent re-claiming their own request.
+    if (before && before.assigned_agent_id !== req.user!.id) {
+      await notifyUsers(
+        [before.customer_id],
+        { type: "support", title: "An agent picked up your request", message: "Someone from our team is now working on it.", requestId: req.params.id },
+        req.user!.id,
+      );
+    }
     res.json(await loadRequestDetail(req.params.id, req.user!));
   }),
 );
@@ -281,7 +314,7 @@ router.post(
   "/:id/messages",
   asyncRoute(async (req: Request, res: Response) => {
     const user = req.user!;
-    await assertRequestAccess(req.params.id, user);
+    const access = await assertRequestAccess(req.params.id, user);
     const { text } = req.body as { text?: string };
     if (!text) throw badRequest("text is required");
 
@@ -293,6 +326,25 @@ router.post(
         message: text,
       },
     })) as unknown as RequestMessageRow;
+
+    const preview = text.length > 120 ? `${text.slice(0, 117)}…` : text;
+    if (isStaff(user.role)) {
+      await notifyUsers(
+        [access.customer_id],
+        { type: "support", title: "New reply on your request", message: preview, requestId: req.params.id },
+        user.id,
+      );
+    } else {
+      // The customer replied: tell whoever owns the request, or the whole
+      // staff queue if nobody has picked it up yet.
+      const owner = await prisma.requests.findUnique({
+        where: { id: req.params.id },
+        select: { assigned_agent_id: true },
+      });
+      const message = { type: "support" as const, title: "Customer replied", message: preview, requestId: req.params.id };
+      if (owner?.assigned_agent_id) await notifyUsers([owner.assigned_agent_id], message, user.id);
+      else await notifyStaff(message, user.id);
+    }
     res.status(201).json(mapMessageRow(data));
   }),
 );
