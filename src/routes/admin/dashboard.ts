@@ -1,7 +1,7 @@
 import type { Request, Response } from "express";
 import { Router } from "express";
 import { requireRole } from "../../lib/auth.js";
-import { db } from "../../lib/supabase.js";
+import { prisma } from "../../lib/prisma.js";
 import { asyncRoute } from "../../middleware/error-handler.js";
 
 const router = Router();
@@ -13,46 +13,28 @@ router.get(
     const now = new Date();
     const startOfToday = new Date(now);
     startOfToday.setHours(0, 0, 0, 0);
-    const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
 
-    const [
-      recentRunsRes,
-      ragCountRes,
-      toolsCountRes,
-      memoryCountRes,
-      failedCountRes,
-      pendingApprovalsRes,
-      tasksTodayRes,
-    ] = await Promise.all([
-      db.from("agent_runs").select("*").order("started_at", { ascending: false }).limit(4),
-      db.from("knowledge_documents").select("id", { count: "exact", head: true }),
-      db.from("agent_tools").select("id", { count: "exact", head: true }).eq("is_active", true),
-      db.from("customer_memory").select("id", { count: "exact", head: true }),
-      db
-        .from("agent_runs")
-        .select("id", { count: "exact", head: true })
-        .eq("status", "failed")
-        .gte("started_at", sevenDaysAgo),
-      db.from("agent_approvals").select("id", { count: "exact", head: true }).eq("status", "pending"),
-      db
-        .from("agent_runs")
-        .select("id", { count: "exact", head: true })
-        .gte("started_at", startOfToday.toISOString()),
-    ]);
-
-    for (const r of [recentRunsRes, ragCountRes, toolsCountRes, memoryCountRes, failedCountRes, pendingApprovalsRes, tasksTodayRes]) {
-      if (r.error) throw r.error;
-    }
+    const [recentRuns, ragCount, toolsCount, memoryCount, failedCount, pendingApprovalsCount, tasksTodayCount] =
+      await Promise.all([
+        prisma.agent_runs.findMany({ orderBy: { started_at: "desc" }, take: 4 }),
+        prisma.knowledge_documents.count(),
+        prisma.agent_tools.count({ where: { is_active: true } }),
+        prisma.customer_memory.count(),
+        prisma.agent_runs.count({ where: { status: "failed", started_at: { gte: sevenDaysAgo } } }),
+        prisma.agent_approvals.count({ where: { status: "pending" } }),
+        prisma.agent_runs.count({ where: { started_at: { gte: startOfToday } } }),
+      ]);
 
     res.json({
-      recentRuns: recentRunsRes.data ?? [],
+      recentRuns,
       stats: {
-        tasksToday: tasksTodayRes.count ?? 0,
-        ragDocuments: ragCountRes.count ?? 0,
-        activeTools: toolsCountRes.count ?? 0,
-        memoryRecords: memoryCountRes.count ?? 0,
-        failedRuns: failedCountRes.count ?? 0,
-        pendingApprovals: pendingApprovalsRes.count ?? 0,
+        tasksToday: tasksTodayCount,
+        ragDocuments: ragCount,
+        activeTools: toolsCount,
+        memoryRecords: memoryCount,
+        failedRuns: failedCount,
+        pendingApprovals: pendingApprovalsCount,
       },
     });
   }),

@@ -11,15 +11,34 @@ export interface TimelineStep {
   timestamp?: string;
 }
 
+/** A file attached to a request. `fileUrl` is a short-lived signed URL — safe to render or open, not to store. */
+export interface RequestAttachment {
+  id: string;
+  fileUrl: string;
+  fileName: string;
+  fileType: string | null;
+  fileSizeBytes: number | null;
+  createdAt: string;
+  messageId?: string | null;
+  uploadedBy?: string | null;
+}
+
 export interface RequestMessage {
   id: string;
   sender: MessageSenderType;
   text: string;
   timestamp: string;
+  attachments?: RequestAttachment[];
 }
 
 export interface ServiceRequest {
   id: string;
+  ticketNumber: number;
+  /** resolv-hq-customer reads this directly (e.g. RequestCard, request/[id].tsx
+   * render `#{request.code}`) — it typed the API response as its own
+   * ServiceRequest with no mapping layer, so this field was silently always
+   * undefined until now. */
+  code: string;
   title: string;
   category: string;
   categoryId?: string | null;
@@ -28,12 +47,22 @@ export interface ServiceRequest {
   priority: AppRequestPriority;
   createdAt: string;
   updatedAt: string;
+  resolvedAt?: string | null;
+  closedAt?: string | null;
+  aiHandled: boolean;
   messages: RequestMessage[];
+  attachments?: RequestAttachment[];
   timeline: TimelineStep[];
   customerId?: string;
   customerName?: string | null;
   assignedAgentId?: string | null;
   assignedAgentName?: string | null;
+  /** Aliases of the two fields above — resolv-hq-customer's (agent)/queue.tsx
+   * and ticket/[id].tsx read assignedAdminId/assignedAdminName specifically
+   * (isMine, "Assign to me" visibility), so those were silently always
+   * undefined/broken until this was added. */
+  assignedAdminId?: string | null;
+  assignedAdminName?: string | null;
 }
 
 export interface RequestCategoryOption {
@@ -42,8 +71,11 @@ export interface RequestCategoryOption {
   description?: string | null;
 }
 
+export type NotificationType = "request_update" | "ai" | "support" | "completed" | "system";
+
 export interface AppNotification {
   id: string;
+  type: NotificationType;
   title: string;
   body: string;
   createdAt: string;
@@ -77,6 +109,7 @@ export interface ChatMessageOut {
   conversationId: string;
   senderType: "customer" | "assistant" | "system";
   content: string;
+  feedback: "up" | "down" | null;
   createdAt: string;
 }
 
@@ -86,4 +119,19 @@ export interface ChatConversationOut {
   status: string;
   startedAt: string;
   messageCount: number;
+}
+
+/** Customer-facing view of a published knowledge_documents row. */
+export interface HelpArticleOut {
+  id: string;
+  slug: string;
+  title: string;
+  category: string;
+  summary: string;
+  body: string[];
+  source: string;
+  readMinutes: number;
+  /** True when the original file (PDF etc.) can be opened via GET /knowledge/:id/file. */
+  hasFile: boolean;
+  fileType: string | null;
 }

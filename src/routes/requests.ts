@@ -1,15 +1,36 @@
 import { Router, type Request, type Response } from "express";
+import multer from "multer";
 import { classifyRequest } from "../lib/ai.js";
 import { requireRole } from "../lib/auth.js";
 import { badRequest, notFound } from "../lib/errors.js";
-import { buildTimeline, mapMessageRow, mapRequestRow, priorityToDb, resolveCategoryId } from "../lib/mappers.js";
+import {
+  getAttachmentSignedUrl,
+  isAllowedAttachmentType,
+  MAX_ATTACHMENT_BYTES,
+  uploadAttachmentFile,
+} from "../lib/attachment-storage.js";
+import { buildTimeline, mapAttachmentRow, mapMessageRow, mapRequestRow, priorityToDb, resolveCategoryId } from "../lib/mappers.js";
+import { notifyStaff, notifyUsers } from "../lib/notify.js";
 import { assertRequestAccess } from "../lib/ownership.js";
+import { isNotFound } from "../lib/prisma-errors.js";
 import { finalStatusIds, loadStatuses, statusIdByName } from "../lib/statuses.js";
-import { db } from "../lib/supabase.js";
+import { prisma } from "../lib/prisma.js";
 import { asyncRoute } from "../middleware/error-handler.js";
-import type { RequestCategoryOption } from "../types/api.js";
+import type { RequestAttachment, RequestCategoryOption } from "../types/api.js";
+import type { RequestMessageRow, RequestRow, RequestStatusHistoryRow } from "../types/database.types.js";
 
 const router = Router();
+
+const attachmentUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_ATTACHMENT_BYTES } });
+
+/** A request's attachments, newest last, each with a fresh short-lived signed URL. */
+async function loadAttachments(requestId: string): Promise<RequestAttachment[]> {
+  const rows = await prisma.request_attachments.findMany({
+    where: { request_id: requestId },
+    orderBy: { created_at: "asc" },
+  });
+  return Promise.all(rows.map(async (row) => mapAttachmentRow(row, await getAttachmentSignedUrl(row.storage_path))));
+}
 
 function isStaff(role: string): boolean {
   return role === "admin" || role === "agent";
@@ -22,9 +43,8 @@ function senderTypeFor(role: string): "customer" | "admin" | "agent" {
 }
 
 async function loadCategories(): Promise<RequestCategoryOption[]> {
-  const { data, error } = await db.from("request_categories").select("*");
-  if (error) throw error;
-  return (data ?? []).map((row) => ({ id: row.id, name: row.name, description: row.description }));
+  const data = await prisma.request_categories.findMany();
+  return data.map((row) => ({ id: row.id, name: row.name, description: row.description }));
 }
 
 async function resolveStaffNames(rows: { customer_id: string; assigned_agent_id: string | null }[]) {
@@ -35,8 +55,11 @@ async function resolveStaffNames(rows: { customer_id: string; assigned_agent_id:
   }
   const nameById = new Map<string, string | null>();
   if (ids.size === 0) return nameById;
-  const { data } = await db.from("profiles").select("id, first_name, last_name").in("id", Array.from(ids));
-  for (const p of data ?? []) nameById.set(p.id, [p.first_name, p.last_name].filter(Boolean).join(" ") || null);
+  const data = await prisma.profiles.findMany({
+    where: { id: { in: Array.from(ids) } },
+    select: { id: true, first_name: true, last_name: true },
+  });
+  for (const p of data) nameById.set(p.id, [p.first_name, p.last_name].filter(Boolean).join(" ") || null);
   return nameById;
 }
 
@@ -45,13 +68,20 @@ async function loadRequestDetail(id: string, user: { role: string }) {
   const statuses = await loadStatuses();
   const statusNameById = new Map(statuses.map((s) => [s.id, s.name]));
 
-  const [{ data: row, error }, categories, messagesRes, historyRes] = await Promise.all([
-    db.from("requests").select("*").eq("id", id).single(),
+  const [row, categories, messages, history, attachments] = await Promise.all([
+    prisma.requests.findUnique({ where: { id } }) as unknown as Promise<RequestRow | null>,
     loadCategories(),
-    db.from("request_messages").select("*").eq("request_id", id).order("created_at", { ascending: true }),
-    db.from("request_status_history").select("*").eq("request_id", id).order("created_at", { ascending: true }),
+    prisma.request_messages.findMany({
+      where: { request_id: id },
+      orderBy: { created_at: "asc" },
+    }) as unknown as Promise<RequestMessageRow[]>,
+    prisma.request_status_history.findMany({
+      where: { request_id: id },
+      orderBy: { created_at: "asc" },
+    }) as unknown as Promise<RequestStatusHistoryRow[]>,
+    loadAttachments(id),
   ]);
-  if (error || !row) throw notFound("Request not found");
+  if (!row) throw notFound("Request not found");
 
   const categoryMap = new Map(categories.map((c) => [c.id, c.name]));
   const categoryName = row.category_id ? categoryMap.get(row.category_id) ?? null : null;
@@ -66,12 +96,14 @@ async function loadRequestDetail(id: string, user: { role: string }) {
     };
   }
 
-  const messages = (messagesRes.data ?? []).map(mapMessageRow);
-
   return {
     ...mapRequestRow(row, categoryName, statusName, staffExtra),
-    messages,
-    timeline: buildTimeline(historyRes.data ?? [], row.created_at, statusNameById),
+    messages: messages.map((msg) => ({
+      ...mapMessageRow(msg),
+      attachments: attachments.filter((a) => a.messageId === msg.id),
+    })),
+    attachments,
+    timeline: buildTimeline(history, row.created_at, statusNameById),
   };
 }
 
@@ -88,18 +120,19 @@ router.get(
     const categoryMap = new Map(categories.map((c) => [c.id, c.name]));
     const statusNameById = new Map(statuses.map((s) => [s.id, s.name]));
 
-    let query = db.from("requests").select("*");
+    let rows: RequestRow[];
     if (isStaff(user.role)) {
       const finalIds = await finalStatusIds();
-      if (finalIds.length > 0) query = query.not("status_id", "in", `(${finalIds.join(",")})`);
-      query = query.order("created_at", { ascending: true });
+      rows = (await prisma.requests.findMany({
+        where: finalIds.length > 0 ? { status_id: { notIn: finalIds } } : undefined,
+        orderBy: { created_at: "asc" },
+      })) as unknown as RequestRow[];
     } else {
-      query = query.eq("customer_id", user.id).order("created_at", { ascending: false });
+      rows = (await prisma.requests.findMany({
+        where: { customer_id: user.id },
+        orderBy: { created_at: "desc" },
+      })) as unknown as RequestRow[];
     }
-
-    const { data, error } = await query;
-    if (error) throw error;
-    const rows = data ?? [];
 
     if (isStaff(user.role)) {
       const nameById = await resolveStaffNames(rows);
@@ -144,9 +177,8 @@ router.post(
     const { category, priority } = classifyRequest(description);
     const resolvedCategoryId = categoryId ?? resolveCategoryId(categories, category);
 
-    const { data: requestRow, error } = await db
-      .from("requests")
-      .insert({
+    const requestRow = (await prisma.requests.create({
+      data: {
         customer_id: userId,
         category_id: resolvedCategoryId,
         status_id: submittedStatusId,
@@ -154,22 +186,28 @@ router.post(
         description,
         priority: priorityToDb(priority),
         source: "mobile",
-      })
-      .select()
-      .single();
-    if (error || !requestRow) throw error ?? new Error("Failed to create request");
+      },
+    })) as unknown as RequestRow;
 
-    const { data: messageRow, error: messageError } = await db
-      .from("request_messages")
-      .insert({ request_id: requestRow.id, sender_type: "customer", sender_id: userId, message: description })
-      .select()
-      .single();
-    if (messageError) throw messageError;
+    const messageRow = (await prisma.request_messages.create({
+      data: { request_id: requestRow.id, sender_type: "customer", sender_id: userId, message: description },
+    })) as unknown as RequestMessageRow;
 
     const categoryName = categories.find((c) => c.id === resolvedCategoryId)?.name ?? category;
+
+    await notifyStaff(
+      {
+        type: "request_update",
+        title: priority === "high" ? "New high-priority request" : "New request",
+        message: `${categoryName}: ${description.slice(0, 120)}`,
+        requestId: requestRow.id,
+      },
+      userId,
+    );
+
     res.status(201).json({
       ...mapRequestRow(requestRow, categoryName, "submitted"),
-      messages: messageRow ? [mapMessageRow(messageRow)] : [],
+      messages: [mapMessageRow(messageRow)],
     });
   }),
 );
@@ -191,38 +229,68 @@ router.patch(
     const newStatusId = await statusIdByName(status);
     if (!newStatusId) throw badRequest(`Unknown status "${status}"`);
 
-    const { data: current, error: currentError } = await db
-      .from("requests")
-      .select("status_id, customer_id")
-      .eq("id", req.params.id)
-      .single();
-    if (currentError || !current) throw notFound("Request not found");
+    const current = await prisma.requests.findUnique({
+      where: { id: req.params.id },
+      select: { status_id: true, customer_id: true },
+    });
+    if (!current) throw notFound("Request not found");
 
     const finalIds = await finalStatusIds();
-    const { error } = await db
-      .from("requests")
-      .update({
+    await prisma.requests.update({
+      where: { id: req.params.id },
+      data: {
         status_id: newStatusId,
-        updated_at: new Date().toISOString(),
-        resolved_at: finalIds.includes(newStatusId) ? new Date().toISOString() : null,
-      })
-      .eq("id", req.params.id);
-    if (error) throw error;
-
-    await db.from("request_status_history").insert({
-      request_id: req.params.id,
-      old_status_id: current.status_id,
-      new_status_id: newStatusId,
-      changed_by: req.user!.id,
+        updated_at: new Date(),
+        resolved_at: finalIds.includes(newStatusId) ? new Date() : null,
+      },
     });
 
-    await db.from("notifications").insert({
-      user_id: current.customer_id,
-      request_id: req.params.id,
-      title: "Request updated",
-      message: `Your request is now "${status}".`,
+    await prisma.request_status_history.create({
+      data: {
+        request_id: req.params.id,
+        old_status_id: current.status_id,
+        new_status_id: newStatusId,
+        changed_by: req.user!.id,
+      },
     });
 
+    await notifyUsers(
+      [current.customer_id],
+      {
+        type: finalIds.includes(newStatusId) ? "completed" : "request_update",
+        title: finalIds.includes(newStatusId) ? "Request completed" : "Request updated",
+        message: `Your request is now "${status}".`,
+        requestId: req.params.id,
+      },
+      req.user!.id,
+    );
+
+    res.json(await loadRequestDetail(req.params.id, req.user!));
+  }),
+);
+
+/** Closing is a distinct, explicit staff action from resolving — a request
+ * can be "completed" for a while before staff close it out. Idempotent. */
+router.patch(
+  "/:id/close",
+  requireRole("staff"),
+  asyncRoute(async (req: Request, res: Response) => {
+    let closed;
+    try {
+      closed = await prisma.requests.update({
+        where: { id: req.params.id },
+        data: { closed_at: new Date() },
+        select: { customer_id: true },
+      });
+    } catch (err) {
+      if (isNotFound(err)) throw notFound("Request not found");
+      throw err;
+    }
+    await notifyUsers(
+      [closed.customer_id],
+      { type: "completed", title: "Request closed", message: "Your request has been closed by our team.", requestId: req.params.id },
+      req.user!.id,
+    );
     res.json(await loadRequestDetail(req.params.id, req.user!));
   }),
 );
@@ -232,9 +300,101 @@ router.patch(
   "/:id/assign",
   requireRole("staff"),
   asyncRoute(async (req: Request, res: Response) => {
-    const { error } = await db.from("requests").update({ assigned_agent_id: req.user!.id }).eq("id", req.params.id);
-    if (error) throw error;
+    const before = await prisma.requests.findUnique({
+      where: { id: req.params.id },
+      select: { customer_id: true, assigned_agent_id: true },
+    });
+    await prisma.requests.updateMany({
+      where: { id: req.params.id },
+      data: { assigned_agent_id: req.user!.id },
+    });
+    // Only announce a real change of owner, not an agent re-claiming their own request.
+    if (before && before.assigned_agent_id !== req.user!.id) {
+      await notifyUsers(
+        [before.customer_id],
+        { type: "support", title: "An agent picked up your request", message: "Someone from our team is now working on it.", requestId: req.params.id },
+        req.user!.id,
+      );
+    }
     res.json(await loadRequestDetail(req.params.id, req.user!));
+  }),
+);
+
+/**
+ * Upload a file to a request (optionally tied to one of its messages).
+ * Customers can only attach to their own requests (assertRequestAccess);
+ * uploaded_by is always req.user, never client-supplied.
+ */
+router.post(
+  "/:id/attachments",
+  attachmentUpload.single("file"),
+  asyncRoute(async (req: Request, res: Response) => {
+    const user = req.user!;
+    const access = await assertRequestAccess(req.params.id, user);
+    const file = req.file;
+    if (!file) throw badRequest("A file is required");
+    if (!isAllowedAttachmentType(file.mimetype)) {
+      throw badRequest("That file type isn't supported — attach an image, PDF, text, Word or Excel file.");
+    }
+
+    const messageIdInput = (req.body as { messageId?: string }).messageId;
+    let messageId: string | null = null;
+    if (messageIdInput) {
+      const message = await prisma.request_messages.findFirst({
+        where: { id: messageIdInput, request_id: req.params.id },
+        select: { id: true },
+      });
+      if (!message) throw badRequest("messageId does not belong to this request");
+      messageId = message.id;
+    }
+
+    const storagePath = await uploadAttachmentFile(req.params.id, file.buffer, file.originalname, file.mimetype);
+    const row = await prisma.request_attachments.create({
+      data: {
+        request_id: req.params.id,
+        message_id: messageId,
+        uploaded_by: user.id,
+        file_name: file.originalname,
+        file_type: file.mimetype,
+        file_size_bytes: file.size,
+        storage_path: storagePath,
+      },
+    });
+
+    // Files uploaded while a request is being filed are already covered by
+    // the "new request" notification; anything added afterwards is news for
+    // whoever is handling it (or, if staff attached it, for the customer).
+    const info = await prisma.requests.findUnique({
+      where: { id: req.params.id },
+      select: { assigned_agent_id: true, created_at: true },
+    });
+    const justFiled = info?.created_at ? Date.now() - info.created_at.getTime() < 2 * 60 * 1000 : false;
+    if (isStaff(user.role)) {
+      await notifyUsers(
+        [access.customer_id],
+        { type: "support", title: "New attachment", message: `${file.originalname} was added to your request.`, requestId: req.params.id },
+        user.id,
+      );
+    } else if (!justFiled) {
+      const note = {
+        type: "support" as const,
+        title: "New attachment",
+        message: `${file.originalname} was added to a request.`,
+        requestId: req.params.id,
+      };
+      if (info?.assigned_agent_id) await notifyUsers([info.assigned_agent_id], note, user.id);
+      else await notifyStaff(note, user.id);
+    }
+
+    res.status(201).json(mapAttachmentRow(row, await getAttachmentSignedUrl(storagePath)));
+  }),
+);
+
+router.get(
+  "/:id/attachments",
+  asyncRoute(async (req: Request, res: Response) => {
+    await assertRequestAccess(req.params.id, req.user!);
+    res.json(await loadAttachments(req.params.id));
   }),
 );
 
@@ -242,13 +402,11 @@ router.get(
   "/:id/messages",
   asyncRoute(async (req: Request, res: Response) => {
     await assertRequestAccess(req.params.id, req.user!);
-    const { data, error } = await db
-      .from("request_messages")
-      .select("*")
-      .eq("request_id", req.params.id)
-      .order("created_at", { ascending: true });
-    if (error) throw error;
-    res.json((data ?? []).map(mapMessageRow));
+    const data = (await prisma.request_messages.findMany({
+      where: { request_id: req.params.id },
+      orderBy: { created_at: "asc" },
+    })) as unknown as RequestMessageRow[];
+    res.json(data.map(mapMessageRow));
   }),
 );
 
@@ -257,21 +415,37 @@ router.post(
   "/:id/messages",
   asyncRoute(async (req: Request, res: Response) => {
     const user = req.user!;
-    await assertRequestAccess(req.params.id, user);
+    const access = await assertRequestAccess(req.params.id, user);
     const { text } = req.body as { text?: string };
     if (!text) throw badRequest("text is required");
 
-    const { data, error } = await db
-      .from("request_messages")
-      .insert({
+    const data = (await prisma.request_messages.create({
+      data: {
         request_id: req.params.id,
         sender_type: senderTypeFor(user.role),
         sender_id: user.id,
         message: text,
-      })
-      .select()
-      .single();
-    if (error || !data) throw error ?? new Error("Failed to send message");
+      },
+    })) as unknown as RequestMessageRow;
+
+    const preview = text.length > 120 ? `${text.slice(0, 117)}…` : text;
+    if (isStaff(user.role)) {
+      await notifyUsers(
+        [access.customer_id],
+        { type: "support", title: "New reply on your request", message: preview, requestId: req.params.id },
+        user.id,
+      );
+    } else {
+      // The customer replied: tell whoever owns the request, or the whole
+      // staff queue if nobody has picked it up yet.
+      const owner = await prisma.requests.findUnique({
+        where: { id: req.params.id },
+        select: { assigned_agent_id: true },
+      });
+      const message = { type: "support" as const, title: "Customer replied", message: preview, requestId: req.params.id };
+      if (owner?.assigned_agent_id) await notifyUsers([owner.assigned_agent_id], message, user.id);
+      else await notifyStaff(message, user.id);
+    }
     res.status(201).json(mapMessageRow(data));
   }),
 );

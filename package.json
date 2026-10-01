@@ -8,17 +8,24 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "postinstall": "prisma generate",
+    "migrate:dev": "prisma migrate dev",
+    "migrate:deploy": "prisma migrate deploy",
+    "migrate:status": "prisma migrate status"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.127.0",
+    "@google/genai": "^2.24.0",
+    "@prisma/client": "^6.19.3",
     "@supabase/supabase-js": "^2.116.0",
     "cors": "^2.8.5",
-    "dotenv": "^16.4.5",
+    "dotenv": "^16.6.1",
     "express": "^4.21.0",
     "ioredis": "^6.0.0",
     "multer": "^1.4.5-lts.1",
-    "openai": "^7.20.0"
+    "openai": "^7.23.0",
+    "unpdf": "^1.8.1"
   },
   "devDependencies": {
     "@eslint/js": "^9",
@@ -27,6 +34,7 @@
     "@types/multer": "^1.4.12",
     "@types/node": "^20",
     "eslint": "^9",
+    "prisma": "^6.19.3",
     "tsx": "^4.19.0",
     "typescript": "^5",
     "typescript-eslint": "^8"

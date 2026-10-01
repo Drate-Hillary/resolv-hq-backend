@@ -1,23 +1,26 @@
 import { Router, type Request, type Response } from "express";
-import { requireRole } from "../lib/auth.js";
 import { notFound } from "../lib/errors.js";
 import { mapNotificationRow } from "../lib/mappers.js";
-import { db } from "../lib/supabase.js";
+import { prisma } from "../lib/prisma.js";
 import { asyncRoute } from "../middleware/error-handler.js";
+import type { NotificationRow } from "../types/database.types.js";
 
 const router = Router();
 
+/**
+ * Every authenticated role has its own inbox (customers: request updates;
+ * staff: new requests, customer replies, approvals) — always scoped to
+ * req.user, never a client-supplied id. Newest 100 only.
+ */
 router.get(
   "/",
-  requireRole("customer"),
   asyncRoute(async (req: Request, res: Response) => {
-    const { data, error } = await db
-      .from("notifications")
-      .select("*")
-      .eq("user_id", req.user!.id)
-      .order("created_at", { ascending: false });
-    if (error) throw error;
-    res.json((data ?? []).map(mapNotificationRow));
+    const data = (await prisma.notifications.findMany({
+      where: { user_id: req.user!.id },
+      orderBy: { created_at: "desc" },
+      take: 100,
+    })) as unknown as NotificationRow[];
+    res.json(data.map(mapNotificationRow));
   }),
 );
 
@@ -25,31 +28,27 @@ router.get(
  * customer's notification read by guessing an id. */
 router.patch(
   "/:id/read",
-  requireRole("customer"),
   asyncRoute(async (req: Request, res: Response) => {
-    const { data, error } = await db
-      .from("notifications")
-      .update({ is_read: true })
-      .eq("id", req.params.id)
-      .eq("user_id", req.user!.id)
-      .select()
-      .maybeSingle();
-    if (error) throw error;
-    if (!data) throw notFound("Notification not found");
+    const existing = await prisma.notifications.findFirst({
+      where: { id: req.params.id, user_id: req.user!.id },
+    });
+    if (!existing) throw notFound("Notification not found");
+
+    const data = (await prisma.notifications.update({
+      where: { id: req.params.id },
+      data: { is_read: true },
+    })) as unknown as NotificationRow;
     res.json(mapNotificationRow(data));
   }),
 );
 
 router.patch(
   "/read-all",
-  requireRole("customer"),
   asyncRoute(async (req: Request, res: Response) => {
-    const { error } = await db
-      .from("notifications")
-      .update({ is_read: true })
-      .eq("user_id", req.user!.id)
-      .eq("is_read", false);
-    if (error) throw error;
+    await prisma.notifications.updateMany({
+      where: { user_id: req.user!.id, is_read: false },
+      data: { is_read: true },
+    });
     res.json({ ok: true });
   }),
 );

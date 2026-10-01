@@ -4,6 +4,7 @@ import type {
   AiConversationRow,
   AiMessageRow,
   CustomerMemoryRow,
+  KnowledgeDocumentRow,
   NotificationRow,
   RequestCategory,
   RequestPriority as DbRequestPriority,
@@ -16,8 +17,10 @@ import type {
   AppRequestPriority,
   ChatConversationOut,
   ChatMessageOut,
+  HelpArticleOut,
   MemoryFact,
   RequestCategoryOption,
+  RequestAttachment,
   RequestMessage,
   ServiceRequest,
   TimelineStep,
@@ -73,6 +76,8 @@ export function mapRequestRow(
 ): ServiceRequest {
   return {
     id: row.id,
+    ticketNumber: Number(row.ticket_number),
+    code: String(row.ticket_number),
     title: row.title,
     category: categoryName ?? "General Inquiry",
     categoryId: row.category_id,
@@ -81,12 +86,17 @@ export function mapRequestRow(
     priority: priorityFromDb(row.priority),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    resolvedAt: row.resolved_at,
+    closedAt: row.closed_at,
+    aiHandled: row.ai_handled,
     messages: [],
     timeline: buildTimeline([], row.created_at, new Map()),
     customerId: row.customer_id,
     customerName: staffExtra?.customerName ?? null,
     assignedAgentId: row.assigned_agent_id,
     assignedAgentName: staffExtra?.assignedAgentName ?? null,
+    assignedAdminId: row.assigned_agent_id,
+    assignedAdminName: staffExtra?.assignedAgentName ?? null,
   };
 }
 
@@ -99,9 +109,34 @@ export function mapMessageRow(row: RequestMessageRow): RequestMessage {
   };
 }
 
+export function mapAttachmentRow(
+  row: {
+    id: string;
+    file_name: string;
+    file_type: string | null;
+    file_size_bytes: number | null;
+    created_at: Date | null;
+    message_id: string | null;
+    uploaded_by: string | null;
+  },
+  fileUrl: string,
+): RequestAttachment {
+  return {
+    id: row.id,
+    fileUrl,
+    fileName: row.file_name,
+    fileType: row.file_type,
+    fileSizeBytes: row.file_size_bytes,
+    createdAt: (row.created_at ?? new Date()).toISOString(),
+    messageId: row.message_id,
+    uploadedBy: row.uploaded_by,
+  };
+}
+
 export function mapNotificationRow(row: NotificationRow): AppNotification {
   return {
     id: row.id,
+    type: row.type as AppNotification["type"],
     title: row.title,
     body: row.message,
     createdAt: row.created_at,
@@ -137,10 +172,49 @@ export function mapChatMessageRow(row: AiMessageRow): ChatMessageOut {
     conversationId: row.conversation_id,
     senderType: row.sender_type,
     content: row.content,
+    feedback: row.feedback,
     createdAt: row.created_at,
   };
 }
 
 export function mapConversationRow(row: AiConversationRow, messageCount: number): ChatConversationOut {
   return { id: row.id, title: row.title, status: row.status, startedAt: row.created_at, messageCount };
+}
+
+/** `knowledge_documents` has no slug/summary/body/readMinutes columns — this app shape is
+ * derived entirely from `title` and `content` at the boundary. */
+export function mapKnowledgeDocumentToHelpArticle(
+  row: KnowledgeDocumentRow,
+  categoryName: string | null,
+): HelpArticleOut {
+  const flat = row.content?.replace(/\s+/g, " ").trim() ?? "";
+  const words = flat.length > 0 ? flat.split(" ").length : 0;
+
+  return {
+    id: row.id,
+    slug: slugifyTitle(row.title, row.id),
+    title: row.title,
+    category: categoryName ?? "General",
+    summary: flat.length > 140 ? `${flat.slice(0, 137)}...` : flat || "Open this article for the full details.",
+    body:
+      row.content
+        ?.split(/\n\s*\n/)
+        .map((p) => p.trim())
+        .filter(Boolean) ?? [
+        "This article's full content is attached as a file — ask the AI assistant if you have questions.",
+      ],
+    source: "Resolv HQ Knowledge Base",
+    readMinutes: Math.max(1, Math.round(words / 200)),
+    hasFile: Boolean(row.file_url),
+    fileType: row.file_type ?? null,
+  };
+}
+
+function slugifyTitle(title: string, id: string): string {
+  const base = title
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)/g, "");
+  return base ? `${base}-${id.slice(0, 8)}` : id;
 }

@@ -2,8 +2,9 @@ import { Router, type Request, type Response } from "express";
 import { requireRole } from "../lib/auth.js";
 import { badRequest, notFound } from "../lib/errors.js";
 import { mapMemoryRow } from "../lib/mappers.js";
-import { db } from "../lib/supabase.js";
+import { prisma } from "../lib/prisma.js";
 import { asyncRoute } from "../middleware/error-handler.js";
+import type { CustomerMemoryRow } from "../types/database.types.js";
 
 const router = Router();
 
@@ -11,13 +12,11 @@ router.get(
   "/",
   requireRole("customer"),
   asyncRoute(async (req: Request, res: Response) => {
-    const { data, error } = await db
-      .from("customer_memory")
-      .select("*")
-      .eq("customer_id", req.user!.id)
-      .order("created_at", { ascending: true });
-    if (error) throw error;
-    res.json((data ?? []).map(mapMemoryRow));
+    const data = (await prisma.customer_memory.findMany({
+      where: { customer_id: req.user!.id },
+      orderBy: { created_at: "asc" },
+    })) as unknown as CustomerMemoryRow[];
+    res.json(data.map(mapMemoryRow));
   }),
 );
 
@@ -30,15 +29,15 @@ router.patch(
     const { value } = req.body as { value?: string };
     if (typeof value !== "string" || !value.trim()) throw badRequest("value is required");
 
-    const { data, error } = await db
-      .from("customer_memory")
-      .update({ memory_value: value })
-      .eq("id", req.params.id)
-      .eq("customer_id", req.user!.id)
-      .select()
-      .maybeSingle();
-    if (error) throw error;
-    if (!data) throw notFound("Memory fact not found");
+    const existing = await prisma.customer_memory.findFirst({
+      where: { id: req.params.id, customer_id: req.user!.id },
+    });
+    if (!existing) throw notFound("Memory fact not found");
+
+    const data = (await prisma.customer_memory.update({
+      where: { id: req.params.id },
+      data: { memory_value: value },
+    })) as unknown as CustomerMemoryRow;
     res.json(mapMemoryRow(data));
   }),
 );
@@ -47,15 +46,10 @@ router.delete(
   "/:id",
   requireRole("customer"),
   asyncRoute(async (req: Request, res: Response) => {
-    const { data, error } = await db
-      .from("customer_memory")
-      .delete()
-      .eq("id", req.params.id)
-      .eq("customer_id", req.user!.id)
-      .select()
-      .maybeSingle();
-    if (error) throw error;
-    if (!data) throw notFound("Memory fact not found");
+    const { count } = await prisma.customer_memory.deleteMany({
+      where: { id: req.params.id, customer_id: req.user!.id },
+    });
+    if (count === 0) throw notFound("Memory fact not found");
     res.status(204).end();
   }),
 );

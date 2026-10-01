@@ -117,6 +117,7 @@ export interface Database {
       requests: {
         Row: {
           id: string;
+          ticket_number: bigint;
           customer_id: string;
           category_id: string | null;
           status_id: string | null;
@@ -125,12 +126,15 @@ export interface Database {
           description: string;
           priority: RequestPriority;
           source: string;
+          ai_handled: boolean;
           created_at: string;
           updated_at: string;
           resolved_at: string | null;
+          closed_at: string | null;
         };
         Insert: {
           id?: string;
+          ticket_number?: bigint;
           customer_id: string;
           category_id?: string | null;
           status_id?: string | null;
@@ -139,9 +143,11 @@ export interface Database {
           description: string;
           priority?: RequestPriority;
           source?: string;
+          ai_handled?: boolean;
           created_at?: string;
           updated_at?: string;
           resolved_at?: string | null;
+          closed_at?: string | null;
         };
         Update: Partial<Database["public"]["Tables"]["requests"]["Insert"]>;
         Relationships: [];
@@ -215,6 +221,8 @@ export interface Database {
           sender_type: AiSenderType;
           content: string;
           model: string | null;
+          /** See migrations/0009_ai_messages_feedback.sql. */
+          feedback: "up" | "down" | null;
           created_at: string;
         };
         Insert: {
@@ -223,6 +231,7 @@ export interface Database {
           sender_type: AiSenderType;
           content: string;
           model?: string | null;
+          feedback?: "up" | "down" | null;
           created_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["ai_messages"]["Insert"]>;
@@ -406,6 +415,7 @@ export interface Database {
           title: string;
           message: string;
           is_read: boolean;
+          type: string;
           created_at: string;
         };
         Insert: {
@@ -415,9 +425,52 @@ export interface Database {
           title: string;
           message: string;
           is_read?: boolean;
+          type?: string;
           created_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["notifications"]["Insert"]>;
+        Relationships: [];
+      };
+      boundary_rules: {
+        Row: {
+          id: string;
+          category: string;
+          pattern: string;
+          fallback_message: string;
+          is_active: boolean;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          category: string;
+          pattern: string;
+          fallback_message: string;
+          is_active?: boolean;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["boundary_rules"]["Insert"]>;
+        Relationships: [];
+      };
+      clarification_triggers: {
+        Row: {
+          id: string;
+          pattern: string | null;
+          question: string;
+          is_fallback: boolean;
+          is_active: boolean;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          pattern?: string | null;
+          question: string;
+          is_fallback?: boolean;
+          is_active?: boolean;
+          created_at?: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["clarification_triggers"]["Insert"]>;
         Relationships: [];
       };
       agent_providers: {
@@ -480,3 +533,5 @@ export type AgentRunRow = Database["public"]["Tables"]["agent_runs"]["Row"];
 export type AgentApprovalRow = Database["public"]["Tables"]["agent_approvals"]["Row"];
 export type NotificationRow = Database["public"]["Tables"]["notifications"]["Row"];
 export type AgentProviderRow = Database["public"]["Tables"]["agent_providers"]["Row"];
+export type BoundaryRuleRow = Database["public"]["Tables"]["boundary_rules"]["Row"];
+export type ClarificationTriggerRow = Database["public"]["Tables"]["clarification_triggers"]["Row"];

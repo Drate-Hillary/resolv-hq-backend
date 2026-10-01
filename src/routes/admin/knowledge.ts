@@ -5,7 +5,9 @@ import multer from "multer";
 import { requireRole } from "../../lib/auth.js";
 import { badRequest, notFound } from "../../lib/errors.js";
 import { deleteKnowledgeFile, getKnowledgeFileSignedUrl, uploadKnowledgeFile } from "../../lib/knowledge-storage.js";
-import { db } from "../../lib/supabase.js";
+import { extractPages, indexPages, isIndexable, reindexDocument } from "../../lib/knowledge-index.js";
+import { isNotFound } from "../../lib/prisma-errors.js";
+import { prisma } from "../../lib/prisma.js";
 import { asyncRoute } from "../../middleware/error-handler.js";
 import type { KnowledgeStatus } from "../../types/database.types.js";
 
@@ -27,9 +29,8 @@ const INLINE_TEXT_MAX_BYTES = 200_000;
 router.get(
   "/",
   asyncRoute(async (_req: Request, res: Response) => {
-    const { data, error } = await db.from("knowledge_documents").select("*").order("created_at", { ascending: false });
-    if (error) throw error;
-    res.json(data ?? []);
+    const data = await prisma.knowledge_documents.findMany({ orderBy: { created_at: "desc" } });
+    res.json(data);
   }),
 );
 
@@ -70,22 +71,28 @@ router.post(
       }
     }
 
-    const { data, error } = await db
-      .from("knowledge_documents")
-      .insert({ title, content, file_url, file_type, status, category_id, uploaded_by: req.user!.id })
-      .select("*")
-      .single();
-    if (error || !data) throw error ?? badRequest("Failed to create document");
+    const data = await prisma.knowledge_documents.create({
+      data: { title, content, file_url, file_type, status, category_id, uploaded_by: req.user!.id },
+    });
+
+    // Make the document readable by the agent: split it page by page into
+    // searchable passages. A failure here must not fail the upload — the file
+    // is stored either way, and staff can re-run indexing from the console.
+    if (file && isIndexable(file.mimetype, file.originalname)) {
+      try {
+        const pages = await extractPages(file.buffer, file.mimetype, file.originalname);
+        await indexPages(data.id, pages);
+      } catch (indexError) {
+        console.error("knowledge indexing failed:", indexError);
+      }
+    }
 
     res.json(data);
 
     setTimeout(() => {
-      db.from("knowledge_documents")
-        .update({ status: "published" })
-        .eq("id", data.id)
-        .then(({ error: updateError }) => {
-          if (updateError) console.error("knowledge indexing update failed:", updateError);
-        });
+      prisma.knowledge_documents
+        .update({ where: { id: data.id }, data: { status: "published" } })
+        .catch((updateError) => console.error("knowledge indexing update failed:", updateError));
     }, 1800);
   }),
 );
@@ -112,15 +119,28 @@ router.patch(
       update.title = title.trim();
     }
 
-    const { data, error } = await db
-      .from("knowledge_documents")
-      .update(update)
-      .eq("id", req.params.id)
-      .select("*")
-      .single();
-    if (error || !data) throw notFound("Document not found");
+    let data;
+    try {
+      data = await prisma.knowledge_documents.update({ where: { id: req.params.id }, data: update });
+    } catch (err) {
+      if (isNotFound(err)) throw notFound("Document not found");
+      throw err;
+    }
 
     res.json(data);
+  }),
+);
+
+/** Rebuilds the document's searchable passages from its stored file. */
+router.post(
+  "/:id/reindex",
+  asyncRoute(async (req: Request, res: Response) => {
+    try {
+      res.json(await reindexDocument(req.params.id));
+    } catch (err) {
+      if (err instanceof Error && err.message === "Document not found") throw notFound("Document not found");
+      throw err;
+    }
   }),
 );
 
@@ -128,12 +148,11 @@ router.patch(
 router.get(
   "/:id/download",
   asyncRoute(async (req: Request, res: Response) => {
-    const { data, error } = await db
-      .from("knowledge_documents")
-      .select("file_url")
-      .eq("id", req.params.id)
-      .single();
-    if (error || !data) throw notFound("Document not found");
+    const data = await prisma.knowledge_documents.findUnique({
+      where: { id: req.params.id },
+      select: { file_url: true },
+    });
+    if (!data) throw notFound("Document not found");
     if (!data.file_url) throw badRequest("This document has no uploaded file");
 
     const url = await getKnowledgeFileSignedUrl(data.file_url);
@@ -144,17 +163,14 @@ router.get(
 router.delete(
   "/:id",
   asyncRoute(async (req: Request, res: Response) => {
-    const { data, error } = await db
-      .from("knowledge_documents")
-      .select("file_url")
-      .eq("id", req.params.id)
-      .single();
-    if (error || !data) throw notFound("Document not found");
+    const data = await prisma.knowledge_documents.findUnique({
+      where: { id: req.params.id },
+      select: { file_url: true },
+    });
+    if (!data) throw notFound("Document not found");
 
-    await db.from("knowledge_chunks").delete().eq("document_id", req.params.id);
-
-    const { error: deleteError } = await db.from("knowledge_documents").delete().eq("id", req.params.id);
-    if (deleteError) throw deleteError;
+    await prisma.knowledge_chunks.deleteMany({ where: { document_id: req.params.id } });
+    await prisma.knowledge_documents.deleteMany({ where: { id: req.params.id } });
 
     if (data.file_url) {
       await deleteKnowledgeFile(data.file_url).catch((err) => console.error("knowledge file delete failed:", err));

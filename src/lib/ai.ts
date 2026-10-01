@@ -8,14 +8,20 @@
 // Abstraction Layer (lib/llm/gateway.ts) first and only drops back to
 // answerQuestion() if no provider is registered/active or every one fails —
 // so the chat keeps working in dev with zero keys configured.
-import { completeWithFallback, GatewayUnavailableError } from "./llm/gateway.js";
-import type { LlmMessage } from "./llm/types.js";
+import type { EscalationDraft } from "./agent-tools.js";
+import { detectBoundaryViolation } from "./ai-boundary.js";
+import { checkForClarification } from "./clarification.js";
 import { buildSystemPrompt } from "./prompts/system-prompt.js";
+import { runReActLoop, type ReActStep } from "./react-agent.js";
+import { queryTerms, scoreText } from "./text-match.js";
 
+/** One retrievable passage of a knowledge document (see lib/knowledge-index.ts) — not the whole document. */
 export interface AiKnowledgeInput {
+  /** The owning document's id. Several passages can share one. */
   id: string;
   title: string;
   content: string;
+  page?: number;
 }
 
 export interface AiRequestInput {
@@ -24,11 +30,30 @@ export interface AiRequestInput {
   status: string;
 }
 
+export interface AiAccountInput {
+  role: string;
+  status: string;
+  organizationName: string | null;
+  city: string | null;
+  country: string;
+  memberSince: string;
+}
+
 export interface AiAnswer {
   text: string;
-  sources: { id: string; title: string }[];
+  sources: { id: string; title: string; score?: number; pages?: number[] }[];
   suggestions: string[];
   steps: string[];
+  /** Structured Plan/Act/Observe trace of the ReAct loop — `steps` above is
+   * the same information flattened to display strings. */
+  trace?: ReActStep[];
+  /** Set when the model call failed and this answer came from the keyword
+   * fallback instead — why it did, so the console can say so. */
+  fallbackReason?: string;
+  /** Set when the assistant drafted an escalation ticket this turn — the
+   * caller (routes/chat.ts) persists it as an agent_approvals row so a human
+   * can actually review it; it is never filed on the model's say-so. */
+  escalationDraft?: EscalationDraft;
 }
 
 const DEFAULT_STEPS = [
@@ -48,6 +73,29 @@ function scoreArticle(query: string, haystack: string): number {
     if (haystack.toLowerCase().includes(w)) score += 1;
   }
   return score;
+}
+
+/**
+ * The few sentences of a passage that actually speak to the question, in
+ * their original order — what the keyword fallback returns instead of the
+ * whole passage (the model path does this itself, guided by the prompt).
+ */
+export function bestSentences(query: string, passage: string, max = 3): string {
+  const terms = queryTerms(query);
+  const sentences = passage.match(/[^.!?]+[.!?]+(?:\s|$)|[^.!?]+$/g)?.map((x) => x.trim()) ?? [passage];
+  const scored = sentences
+    .map((sentence, index) => ({
+      sentence,
+      index,
+      score: terms.filter((t) => sentence.toLowerCase().includes(t)).length,
+    }))
+    .filter((x) => x.score > 0)
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .slice(0, max)
+    .sort((a, b) => a.index - b.index);
+
+  if (scored.length === 0) return passage.slice(0, 300);
+  return scored.map((x) => x.sentence).join(" ");
 }
 
 export function answerQuestion(
@@ -73,7 +121,7 @@ export function answerQuestion(
   const ranked = knowledge
     .map((doc) => ({
       doc,
-      score: scoreArticle(lower, `${doc.title} ${doc.content}`),
+      score: scoreText(lower, `${doc.title} ${doc.content}`),
     }))
     .filter((r) => r.score > 0)
     .sort((a, b) => b.score - a.score);
@@ -81,8 +129,8 @@ export function answerQuestion(
   if (ranked.length > 0) {
     const top = ranked[0].doc;
     return {
-      text: top.content.slice(0, 500),
-      sources: [{ id: top.id, title: top.title }],
+      text: bestSentences(query, top.content),
+      sources: toSources(ranked.slice(0, 1)).map(({ id, title, pages }) => ({ id, title, pages })),
       suggestions: ranked
         .slice(1, 3)
         .map((r) => r.doc.title)
@@ -111,75 +159,131 @@ export function answerQuestion(
  * deterministic answerQuestion() if no provider is configured or every
  * provider call fails.
  */
+/** Knowledge documents that actually match the query, best first. Used for
+ * both the prompt context and the reported sources, so what the model was
+ * shown and what the UI says was retrieved are the same set. */
+/** Collapses ranked passages into distinct source documents (best first), keeping which pages matched. */
+function toSources(
+  ranked: { doc: AiKnowledgeInput; score: number }[],
+  limit = 3,
+): { id: string; title: string; score: number; pages: number[] }[] {
+  const byDoc = new Map<string, { id: string; title: string; score: number; pages: number[] }>();
+  for (const { doc, score } of ranked) {
+    const entry = byDoc.get(doc.id) ?? { id: doc.id, title: doc.title, score, pages: [] };
+    if (doc.page && !entry.pages.includes(doc.page)) entry.pages.push(doc.page);
+    byDoc.set(doc.id, entry);
+  }
+  return Array.from(byDoc.values())
+    .slice(0, limit)
+    .map((e) => ({ ...e, pages: e.pages.sort((a, b) => a - b) }));
+}
+
+function rankKnowledge(query: string, knowledge: AiKnowledgeInput[]): { doc: AiKnowledgeInput; score: number }[] {
+  return knowledge
+    .map((doc) => ({ doc, score: scoreText(query, `${doc.title} ${doc.content}`) }))
+    .filter((r) => r.score > 0)
+    .sort((a, b) => b.score - a.score);
+}
+
+function bestKnowledgeScore(query: string, knowledge: AiKnowledgeInput[]): number {
+  return knowledge.reduce((max, doc) => Math.max(max, scoreArticle(query, `${doc.title} ${doc.content}`)), 0);
+}
+
 export async function generateAssistantReply(
   query: string,
   knowledge: AiKnowledgeInput[],
   activeRequests: AiRequestInput[],
+  account: AiAccountInput,
   isStaffCaller = false,
 ): Promise<AiAnswer> {
+  // Clarification Prompting Logic: a deterministic gate, not a prompt
+  // instruction — runs before the LLM (or the keyword fallback) ever sees
+  // the query, so a vague message always gets exactly one targeted
+  // clarifying question instead of a guess, regardless of what a model
+  // would have done with it. Skipped when the query clearly wants a
+  // request-status lookup, which is never ambiguous.
+  const isRequestStatusQuery = /\brequest\b|\bstatus\b/i.test(query) && activeRequests.length > 0;
+  if (!isRequestStatusQuery) {
+    try {
+      const clarification = await checkForClarification(query, bestKnowledgeScore(query, knowledge));
+      if (clarification) {
+        console.warn(`Clarification requested (matched: ${clarification.matchedPattern}) for query: "${query}"`);
+        return {
+          text: clarification.question,
+          sources: [],
+          suggestions: [],
+          steps: [DEFAULT_STEPS[0], "This needs a bit more detail before I can help"],
+        };
+      }
+    } catch (err) {
+      console.error("Clarification check failed, continuing without it:", err);
+    }
+  }
+
   try {
-    const knowledgeContext = knowledge
+    const ranked = rankKnowledge(query, knowledge);
+    const knowledgeContext = ranked
       .slice(0, 5)
-      .map((d) => `### ${d.title}\n${d.content.slice(0, 800)}`)
+      .map(({ doc: d }) => `### ${d.title}${d.page ? ` (page ${d.page})` : ""}\n${d.content.slice(0, 800)}`)
       .join("\n\n");
     const requestContext = activeRequests
       .slice(0, 5)
       .map((r) => `- "${r.title}": ${r.status}`)
       .join("\n");
 
-    const messages: LlmMessage[] = [
-      {
-        role: "system",
-        content: buildSystemPrompt({ knowledgeContext, requestContext, isStaffCaller }),
-      },
-      { role: "user", content: query },
-    ];
+    const systemPrompt = buildSystemPrompt({ knowledgeContext, requestContext, isStaffCaller });
 
-    const result = await completeWithFallback(messages);
+    // ReAct Loop Core Implementation (lib/react-agent.ts): Sense (query +
+    // context, above) -> Plan -> Act -> Observe, repeated until the model
+    // responds with a final answer instead of another tool call.
+    const result = await runReActLoop(systemPrompt, query, knowledge, activeRequests, account);
+
+    // Structural backstop: the prompt (lib/prompts/system-prompt.ts, rule 2)
+    // already tells the model never to claim a fabricated action, but that's
+    // an instruction, not a guarantee — this catches it independent of
+    // whether the model complied.
+    const violation = await detectBoundaryViolation(result.content);
+    if (violation) {
+      console.warn(
+        `AI Boundary Matrix violation blocked (${violation.category}): "${violation.matchedText}" — original response discarded.`,
+      );
+    }
+
+    const traceSteps = result.trace.map((step) => {
+      switch (step.phase) {
+        case "plan":
+          return `Planning: ${step.detail}`;
+        case "act":
+          return `Acting: ${step.detail}`;
+        case "observe":
+          return `Observed: ${step.detail}`;
+        case "respond":
+          return step.detail;
+      }
+    });
+
     return {
-      text: result.content,
-      sources: knowledge.slice(0, 3).map((d) => ({ id: d.id, title: d.title })),
+      text: violation ? violation.fallbackMessage : result.content,
+      sources: toSources(ranked),
       suggestions: [],
       steps: [
-        ...DEFAULT_STEPS.slice(0, 2),
+        DEFAULT_STEPS[0],
         result.cached ? "Found a cached answer" : `Calling ${result.providerName} (${result.model})`,
-        "Preparing your response",
-      ],
+        ...traceSteps,
+        violation ? "Blocked a boundary-matrix violation" : undefined,
+      ].filter((s): s is string => Boolean(s)),
+      trace: result.trace,
+      escalationDraft: result.escalationDraft,
     };
   } catch (err) {
-    if (!(err instanceof GatewayUnavailableError)) {
-      console.error("LLM gateway call failed unexpectedly, falling back to keyword search:", err);
-    }
-    return answerQuestion(query, knowledge, activeRequests);
+    const reason = err instanceof Error ? err.message : String(err);
+    console.error(`LLM gateway unavailable, falling back to keyword search: ${reason}`);
+    return { ...answerQuestion(query, knowledge, activeRequests), fallbackReason: reason };
   }
 }
 
-const CATEGORY_KEYWORDS: Record<string, string[]> = {
-  Billing: ["invoice", "charge", "payment", "bill", "refund", "price"],
-  "Account support": ["password", "login", "account", "email", "profile", "access"],
-  "Service assistance": ["sync", "integration", "error", "bug", "broken", "not working", "issue"],
-  "Product question": ["how", "what", "can i", "does", "feature"],
-};
-
-export function classifyRequest(description: string): {
-  category: string;
-  priority: "low" | "normal" | "high";
-} {
-  const lower = description.toLowerCase();
-  let best = "Service assistance";
-  let bestScore = 0;
-  for (const [category, words] of Object.entries(CATEGORY_KEYWORDS)) {
-    const score = words.reduce((acc, w) => acc + (lower.includes(w) ? 1 : 0), 0);
-    if (score > bestScore) {
-      bestScore = score;
-      best = category;
-    }
-  }
-  const urgentWords = ["urgent", "asap", "immediately", "broken", "down", "can't", "cannot"];
-  const priority: "low" | "normal" | "high" = urgentWords.some((w) => lower.includes(w))
-    ? "high"
-    : description.length < 40
-      ? "low"
-      : "normal";
-  return { category: best, priority };
-}
+// Re-exported for existing callers (routes/ai.ts, routes/requests.ts) — the
+// implementation moved to lib/classify.ts so lib/agent-tools.ts (the
+// draft_escalation_ticket tool) can reuse it without a circular import
+// through ai.ts -> react-agent.ts -> agent-tools.ts -> ai.ts.
+export { classifyRequest } from "./classify.js";
