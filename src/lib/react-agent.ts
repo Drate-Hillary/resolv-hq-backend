@@ -15,10 +15,11 @@
 //            calls), that's the final response — or MAX_ITERATIONS is hit,
 //            in which case the loop stops and returns a safe fallback
 //            rather than looping forever.
-import { AGENT_TOOL_DEFINITIONS, buildEscalationDraft, executeAgentTool, type EscalationDraft } from "./agent-tools.js";
+import { buildEscalationDraft, executeAgentTool, type EscalationDraft } from "./agent-tools.js";
 import type { AiAccountInput, AiKnowledgeInput, AiRequestInput } from "./ai.js";
 import { completeWithFallback } from "./llm/gateway.js";
 import type { LlmMessage } from "./llm/types.js";
+import { getActiveToolDefinitions } from "./tool-registry.js";
 
 export interface ReActStep {
   phase: "plan" | "act" | "observe" | "respond";
@@ -59,9 +60,11 @@ export async function runReActLoop(
   ];
   const trace: ReActStep[] = [];
   let escalationDraft: EscalationDraft | undefined;
+  const tools = await getActiveToolDefinitions();
+  const allowedTools = new Set(tools.map((t) => t.name));
 
   for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
-    const result = await completeWithFallback(messages, AGENT_TOOL_DEFINITIONS);
+    const result = await completeWithFallback(messages, tools);
 
     if (result.toolCalls && result.toolCalls.length > 0) {
       trace.push({ phase: "plan", detail: `Decided to call: ${result.toolCalls.map((c) => c.name).join(", ")}` });
@@ -72,6 +75,14 @@ export async function runReActLoop(
           const observation = `Your call to "${call.name}" could not be executed: its arguments were not valid (${call.argumentsParseError}). Retry with a corrected JSON arguments object.`;
           trace.push({ phase: "act", detail: `${call.name}: rejected — ${call.argumentsParseError}` });
           console.error(`ReAct loop: rejected malformed tool-call arguments for "${call.name}": ${call.argumentsParseError}`);
+          trace.push({ phase: "observe", detail: observation });
+          messages.push({ role: "tool", toolCallId: call.id, content: observation });
+          continue;
+        }
+
+        if (!allowedTools.has(call.name)) {
+          const observation = `Tool "${call.name}" is not available.`;
+          trace.push({ phase: "act", detail: `${call.name}: rejected — not an active tool` });
           trace.push({ phase: "observe", detail: observation });
           messages.push({ role: "tool", toolCallId: call.id, content: observation });
           continue;

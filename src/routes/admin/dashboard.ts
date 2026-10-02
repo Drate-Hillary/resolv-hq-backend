@@ -26,7 +26,29 @@ router.get(
         prisma.agent_runs.count({ where: { started_at: { gte: startOfToday } } }),
       ]);
 
+    // Runs per day for the last 7 calendar days (today included), oldest first.
+    const windowStart = new Date(startOfToday);
+    windowStart.setDate(windowStart.getDate() - 6);
+    const windowRuns = await prisma.agent_runs.findMany({
+      where: { started_at: { gte: windowStart } },
+      select: { started_at: true, status: true },
+    });
+    const runsByDay = Array.from({ length: 7 }, (_, i) => {
+      const day = new Date(windowStart);
+      day.setDate(windowStart.getDate() + i);
+      const date = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
+      return { date, runs: 0, failed: 0, day };
+    });
+    for (const run of windowRuns) {
+      if (!run.started_at) continue;
+      const bucket = runsByDay.find((d) => run.started_at! >= d.day && run.started_at! < new Date(d.day.getTime() + 24 * 60 * 60 * 1000));
+      if (!bucket) continue;
+      bucket.runs++;
+      if (run.status === "failed") bucket.failed++;
+    }
+
     res.json({
+      runsByDay: runsByDay.map(({ date, runs, failed }) => ({ date, runs, failed })),
       recentRuns,
       stats: {
         tasksToday: tasksTodayCount,

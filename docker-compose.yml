@@ -22,7 +22,9 @@ services:
     depends_on:
       - redis
     ports:
-      - "4000:4000"
+      # Host side is overridable (BACKEND_HOST_PORT in .env) so the container
+      # and a locally-run `npm run dev` (which uses PORT=4000) can coexist.
+      - "${BACKEND_HOST_PORT:-4000}:4000"
     restart: unless-stopped
 
   redis:
