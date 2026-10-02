@@ -7,6 +7,7 @@ import { rateLimit } from "./middleware/rate-limit.js";
 import meRouter from "./routes/me.js";
 import requestsRouter from "./routes/requests.js";
 import notificationsRouter from "./routes/notifications.js";
+import eventsRouter from "./routes/events.js";
 import categoriesRouter from "./routes/categories.js";
 import helpArticlesRouter from "./routes/help-articles.js";
 import memoryRouter from "./routes/memory.js";
@@ -47,6 +48,7 @@ export function createApp() {
   app.use("/me", meRouter);
   app.use("/requests", requestsRouter);
   app.use("/notifications", notificationsRouter);
+  app.use("/events", eventsRouter);
   app.use("/categories", categoriesRouter);
   app.use("/help-articles", helpArticlesRouter);
   // memory-facts: the customer's own customer_memory rows.
