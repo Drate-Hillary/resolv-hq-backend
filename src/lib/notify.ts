@@ -3,8 +3,11 @@
 // here so the type vocabulary and the "never notify yourself" rule live in
 // one spot, and so a failed notification can never fail the action that
 // triggered it — they are a side effect, not part of the transaction.
+import { mapNotificationRow } from "./mappers.js";
 import { prisma } from "./prisma.js";
+import { publish } from "./realtime.js";
 import type { NotificationType } from "../types/api.js";
+import type { NotificationRow } from "../types/database.types.js";
 
 export interface NotificationInput {
   type: NotificationType;
@@ -15,7 +18,7 @@ export interface NotificationInput {
 
 async function insertFor(userIds: string[], input: NotificationInput) {
   if (userIds.length === 0) return;
-  await prisma.notifications.createMany({
+  const rows = await prisma.notifications.createManyAndReturn({
     data: userIds.map((user_id) => ({
       user_id,
       request_id: input.requestId ?? null,
@@ -24,6 +27,21 @@ async function insertFor(userIds: string[], input: NotificationInput) {
       message: input.message,
     })),
   });
+  // Push each saved row to its recipient so the bell updates instantly.
+  // A failed push never fails the notification itself.
+  for (const row of rows) {
+    void publish(
+      { userIds: [row.user_id] },
+      {
+        type: "notification",
+        notification: mapNotificationRow({
+          ...row,
+          is_read: row.is_read ?? false,
+          created_at: (row.created_at ?? new Date()).toISOString(),
+        } as unknown as NotificationRow),
+      },
+    );
+  }
 }
 
 /** Notify specific users. `exceptUserId` is the actor — people aren't told about their own actions. */
