@@ -11,6 +11,7 @@ import {
 } from "../lib/attachment-storage.js";
 import { buildTimeline, mapAttachmentRow, mapMessageRow, mapRequestRow, priorityToDb, resolveCategoryId } from "../lib/mappers.js";
 import { notifyStaff, notifyUsers } from "../lib/notify.js";
+import { publish } from "../lib/realtime.js";
 import { assertRequestAccess } from "../lib/ownership.js";
 import { isNotFound } from "../lib/prisma-errors.js";
 import { finalStatusIds, loadStatuses, statusIdByName } from "../lib/statuses.js";
@@ -428,25 +429,70 @@ router.post(
       },
     })) as unknown as RequestMessageRow;
 
+    const mapped = mapMessageRow(data);
+
+    // Instant delivery: push the saved message to the customer and every
+    // connected staff member (open-queue semantics) before doing anything
+    // else. The sender's own tabs get it too; clients de-duplicate by id.
+    void publish(
+      { userIds: [access.customer_id], staff: true },
+      { type: "message", requestId: req.params.id, message: mapped },
+    );
+    res.status(201).json(mapped);
+
+    // Notifications are a side effect, so they no longer hold up the reply
+    // the sender is waiting on (they used to be awaited before responding).
     const preview = text.length > 120 ? `${text.slice(0, 117)}…` : text;
-    if (isStaff(user.role)) {
-      await notifyUsers(
-        [access.customer_id],
-        { type: "support", title: "New reply on your request", message: preview, requestId: req.params.id },
-        user.id,
-      );
-    } else {
-      // The customer replied: tell whoever owns the request, or the whole
-      // staff queue if nobody has picked it up yet.
-      const owner = await prisma.requests.findUnique({
-        where: { id: req.params.id },
-        select: { assigned_agent_id: true },
-      });
-      const message = { type: "support" as const, title: "Customer replied", message: preview, requestId: req.params.id };
-      if (owner?.assigned_agent_id) await notifyUsers([owner.assigned_agent_id], message, user.id);
-      else await notifyStaff(message, user.id);
-    }
-    res.status(201).json(mapMessageRow(data));
+    void (async () => {
+      try {
+        if (isStaff(user.role)) {
+          await notifyUsers(
+            [access.customer_id],
+            { type: "support", title: "New reply on your request", message: preview, requestId: req.params.id },
+            user.id,
+          );
+        } else {
+          // The customer replied: tell whoever owns the request, or the whole
+          // staff queue if nobody has picked it up yet.
+          const owner = await prisma.requests.findUnique({
+            where: { id: req.params.id },
+            select: { assigned_agent_id: true },
+          });
+          const message = { type: "support" as const, title: "Customer replied", message: preview, requestId: req.params.id };
+          if (owner?.assigned_agent_id) await notifyUsers([owner.assigned_agent_id], message, user.id);
+          else await notifyStaff(message, user.id);
+        }
+      } catch (err) {
+        console.error("Failed to send message notifications:", err);
+      }
+    })();
+  }),
+);
+
+/**
+ * "X is typing…" signal. Nothing is stored — it's pushed straight to the other
+ * participants and the client expires it on its own if no further ping
+ * arrives. Access is checked exactly like reading the thread, and the sender
+ * is always req.user, never a client-supplied id.
+ */
+router.post(
+  "/:id/typing",
+  asyncRoute(async (req: Request, res: Response) => {
+    const user = req.user!;
+    const access = await assertRequestAccess(req.params.id, user);
+    const { typing } = req.body as { typing?: boolean };
+
+    void publish(
+      { userIds: [access.customer_id], staff: true },
+      {
+        type: "typing",
+        requestId: req.params.id,
+        userId: user.id,
+        senderType: senderTypeFor(user.role),
+        typing: typing !== false,
+      },
+    );
+    res.status(204).end();
   }),
 );
 
