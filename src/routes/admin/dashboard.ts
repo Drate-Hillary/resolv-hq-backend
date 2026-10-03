@@ -47,7 +47,31 @@ router.get(
       if (run.status === "failed") bucket.failed++;
     }
 
+    // Responses given per agent provider (e.g. anthropic, openai). Assistant messages
+    // record the model that wrote them, so a response is attributed to the provider
+    // that has that model registered. Keyword-fallback answers have no model and
+    // aren't attributed to anyone.
+    const [providers, responsesByModel] = await Promise.all([
+      prisma.agent_providers.findMany({ select: { provider: true, model: true }, orderBy: { created_at: "asc" } }),
+      prisma.ai_messages.groupBy({ by: ["model"], where: { sender_type: "assistant" }, _count: { _all: true } }),
+    ]);
+    const modelsByProvider = new Map<string, Set<string>>();
+    for (const p of providers) {
+      const models = modelsByProvider.get(p.provider) ?? new Set<string>();
+      if (p.model) models.add(p.model);
+      modelsByProvider.set(p.provider, models);
+    }
+    const agentPerformance = [...modelsByProvider].map(([provider, models]) => ({
+      id: provider,
+      name: provider,
+      model: [...models].join(", ") || null,
+      responses: responsesByModel
+        .filter((r) => r.model != null && models.has(r.model))
+        .reduce((n, r) => n + r._count._all, 0),
+    }));
+
     res.json({
+      agentPerformance,
       runsByDay: runsByDay.map(({ date, runs, failed }) => ({ date, runs, failed })),
       recentRuns,
       stats: {
