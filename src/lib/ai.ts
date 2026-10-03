@@ -44,6 +44,8 @@ export interface AiAnswer {
   sources: { id: string; title: string; score?: number; pages?: number[] }[];
   suggestions: string[];
   steps: string[];
+  /** Model that wrote this answer; unset for keyword-fallback/canned answers. */
+  model?: string;
   /** Structured Plan/Act/Observe trace of the ReAct loop — `steps` above is
    * the same information flattened to display strings. */
   trace?: ReActStep[];
@@ -268,6 +270,7 @@ export async function generateAssistantReply(
       ].filter((s): s is string => Boolean(s)),
       trace: result.trace,
       escalationDraft: result.escalationDraft,
+      model: violation ? undefined : result.model,
     };
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
