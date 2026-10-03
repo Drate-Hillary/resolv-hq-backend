@@ -141,6 +141,7 @@ router.post(
         conversation_id: req.params.id,
         sender_type: "assistant",
         content: answer.text,
+        model: answer.model,
       },
     })) as unknown as AiMessageRow;
 

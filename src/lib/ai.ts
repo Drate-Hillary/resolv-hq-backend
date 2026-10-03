@@ -13,7 +13,7 @@ import { detectBoundaryViolation } from "./ai-boundary.js";
 import { checkForClarification } from "./clarification.js";
 import { buildSystemPrompt } from "./prompts/system-prompt.js";
 import { runReActLoop, type ReActStep } from "./react-agent.js";
-import { queryTerms, scoreText } from "./text-match.js";
+import { isRelevant, queryTerms, scoreText } from "./text-match.js";
 
 /** One retrievable passage of a knowledge document (see lib/knowledge-index.ts) — not the whole document. */
 export interface AiKnowledgeInput {
@@ -44,6 +44,8 @@ export interface AiAnswer {
   sources: { id: string; title: string; score?: number; pages?: number[] }[];
   suggestions: string[];
   steps: string[];
+  /** Model that wrote this answer; unset for keyword-fallback/canned answers. */
+  model?: string;
   /** Structured Plan/Act/Observe trace of the ReAct loop — `steps` above is
    * the same information flattened to display strings. */
   trace?: ReActStep[];
@@ -118,13 +120,7 @@ export function answerQuestion(
     };
   }
 
-  const ranked = knowledge
-    .map((doc) => ({
-      doc,
-      score: scoreText(lower, `${doc.title} ${doc.content}`),
-    }))
-    .filter((r) => r.score > 0)
-    .sort((a, b) => b.score - a.score);
+  const ranked = rankKnowledge(lower, knowledge);
 
   if (ranked.length > 0) {
     const top = ranked[0].doc;
@@ -180,9 +176,9 @@ function toSources(
 
 function rankKnowledge(query: string, knowledge: AiKnowledgeInput[]): { doc: AiKnowledgeInput; score: number }[] {
   return knowledge
+    .filter((doc) => isRelevant(query, `${doc.title} ${doc.content}`))
     .map((doc) => ({ doc, score: scoreText(query, `${doc.title} ${doc.content}`) }))
-    .filter((r) => r.score > 0)
-    .sort((a, b) => b.score - a.score);
+    .sort((a, b) => b.score - a.score || a.doc.content.length - b.doc.content.length);
 }
 
 function bestKnowledgeScore(query: string, knowledge: AiKnowledgeInput[]): number {
@@ -274,6 +270,7 @@ export async function generateAssistantReply(
       ].filter((s): s is string => Boolean(s)),
       trace: result.trace,
       escalationDraft: result.escalationDraft,
+      model: violation ? undefined : result.model,
     };
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
