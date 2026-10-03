@@ -18,7 +18,7 @@
 import { classifyRequest } from "./classify.js";
 import type { AiAccountInput, AiKnowledgeInput, AiRequestInput } from "./ai.js";
 import type { LlmToolDefinition } from "./llm/types.js";
-import { scoreText } from "./text-match.js";
+import { isRelevant, scoreText } from "./text-match.js";
 
 export const AGENT_TOOL_DEFINITIONS: LlmToolDefinition[] = [
   {
@@ -95,9 +95,9 @@ export interface EscalationDraft {
 function searchKnowledgeBase(args: Record<string, unknown>, knowledge: AiKnowledgeInput[]): string {
   const query = typeof args.query === "string" ? args.query : "";
   const ranked = knowledge
-    .map((doc) => ({ doc, score: scoreText(query,`${doc.title} ${doc.content}`) }))
-    .filter((r) => r.score > 0)
-    .sort((a, b) => b.score - a.score)
+    .filter((doc) => isRelevant(query, `${doc.title} ${doc.content}`))
+    .map((doc) => ({ doc, score: scoreText(query, `${doc.title} ${doc.content}`) }))
+    .sort((a, b) => b.score - a.score || a.doc.content.length - b.doc.content.length)
     .slice(0, 3);
 
   if (ranked.length === 0) return "No matching knowledge base articles found.";

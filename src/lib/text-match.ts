@@ -13,6 +13,8 @@ function stem(word: string): string {
   if (word.length > 4 && word.endsWith("ies")) return `${word.slice(0, -3)}y`;
   if (word.length > 4 && word.endsWith("ing")) return word.slice(0, -3);
   if (word.length > 3 && word.endsWith("es") && /(ss|sh|ch|x|z)es$/.test(word)) return word.slice(0, -2);
+  // "statuses" -> "status", not "statuse" (which would not match the singular in a document).
+  if (word.length > 5 && word.endsWith("uses")) return word.slice(0, -2);
   if (word.length > 3 && word.endsWith("s") && !word.endsWith("ss")) return word.slice(0, -1);
   return word;
 }
@@ -28,6 +30,21 @@ export function queryTerms(query: string): string[] {
         .map(stem),
     ),
   );
+}
+
+/**
+ * Whether a passage is relevant enough to count as grounding for a query.
+ * A single coincidental shared word ("password" in a billing policy for "how
+ * do I reset my password") is not enough: a one-term query needs that term,
+ * anything longer needs at least half of its distinct terms (minimum two).
+ */
+export function isRelevant(query: string, text: string): boolean {
+  const terms = queryTerms(query);
+  if (terms.length === 0) return false;
+  const haystack = text.toLowerCase();
+  const matched = terms.filter((term) => haystack.includes(term)).length;
+  const required = terms.length === 1 ? 1 : Math.max(2, Math.ceil(terms.length / 2));
+  return matched >= required;
 }
 
 /**
