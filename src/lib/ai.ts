@@ -14,6 +14,7 @@ import { checkForClarification } from "./clarification.js";
 import { buildSystemPrompt } from "./prompts/system-prompt.js";
 import { runReActLoop, type ReActStep } from "./react-agent.js";
 import { isRelevant, queryTerms, scoreText } from "./text-match.js";
+import { stagesFromTrace, type AgentFlowRecord } from "./llm/flow-log.js";
 
 /** One retrievable passage of a knowledge document (see lib/knowledge-index.ts) — not the whole document. */
 export interface AiKnowledgeInput {
@@ -46,6 +47,8 @@ export interface AiAnswer {
   steps: string[];
   /** Model that wrote this answer; unset for keyword-fallback/canned answers. */
   model?: string;
+  /** Path this answer took through providers and ReAct stages, for the flow diagram. */
+  flow?: AgentFlowRecord;
   /** Structured Plan/Act/Observe trace of the ReAct loop — `steps` above is
    * the same information flattened to display strings. */
   trace?: ReActStep[];
@@ -271,11 +274,33 @@ export async function generateAssistantReply(
       trace: result.trace,
       escalationDraft: result.escalationDraft,
       model: violation ? undefined : result.model,
+      flow: {
+        kind: "model",
+        provider: result.providerName,
+        model: result.model,
+        attempts: result.attempts,
+        cached: result.cached,
+        stages: stagesFromTrace(result.trace),
+        outcome: violation ? "blocked" : result.escalationDraft ? "escalated" : "answered",
+      },
     };
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
     console.error(`LLM gateway unavailable, falling back to keyword search: ${reason}`);
-    return { ...answerQuestion(query, knowledge, activeRequests), fallbackReason: reason };
+    return {
+      ...answerQuestion(query, knowledge, activeRequests),
+      fallbackReason: reason,
+      flow: {
+        kind: "fallback",
+        provider: null,
+        model: null,
+        attempts: [],
+        cached: false,
+        stages: [],
+        outcome: "fallback",
+        failureReason: reason,
+      },
+    };
   }
 }
 
