@@ -28,6 +28,8 @@ export interface GatewayResult {
   providerName: string;
   toolCalls?: LlmToolCall[];
   cached?: boolean;
+  /** Providers tried for this call, in order; the last one answered. */
+  attempts?: string[];
 }
 
 const CACHE_TTL_SECONDS = 600;
@@ -65,7 +67,7 @@ export async function completeWithFallback(messages: LlmMessage[], tools?: LlmTo
     const cached = await redis.get(key);
     if (cached) {
       const parsed = JSON.parse(cached) as GatewayResult;
-      return { ...parsed, cached: true };
+      return { ...parsed, cached: true, attempts: [] };
     }
   } catch (err) {
     console.error("LLM cache read failed, continuing without cache:", err);
@@ -81,15 +83,18 @@ export async function completeWithFallback(messages: LlmMessage[], tools?: LlmTo
   }
 
   const failures: string[] = [];
+  const attempts: string[] = [];
   for (const row of providers) {
     const client = buildClient(row);
     if (!client) {
       failures.push(`${row.name}: provider "${row.provider}" has no client implementation yet`);
+      attempts.push(row.name);
       continue;
     }
     try {
       const completion = await withRetry(() => client.complete(messages, tools));
-      const result: GatewayResult = { ...completion, providerName: row.name };
+      attempts.push(row.name);
+      const result: GatewayResult = { ...completion, providerName: row.name, attempts };
 
       // Only a final answer (no pending tool calls) is a standalone,
       // reusable result — an intermediate "please call this tool" turn
@@ -106,6 +111,7 @@ export async function completeWithFallback(messages: LlmMessage[], tools?: LlmTo
       return result;
     } catch (err) {
       failures.push(`${row.name}: ${err instanceof Error ? err.message : String(err)}`);
+      attempts.push(row.name);
     }
   }
 
