@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { Router, type Request, type Response } from "express";
 import { formatEscalationDraft, type EscalationDraft } from "../lib/agent-tools.js";
 import { generateAssistantReply, type AiAccountInput, type AiKnowledgeInput, type AiRequestInput } from "../lib/ai.js";
@@ -150,16 +151,37 @@ router.post(
     // actually reaches a human; it's created "awaiting_approval", so nothing
     // is filed until staff act on it via admin/approvals.ts.
     let escalation: ({ approvalId: string; runId: string } & EscalationDraft) | null = null;
-    if (answer.escalationDraft) {
-      const run = await prisma.agent_runs.create({
-        data: {
-          customer_id: user.id,
-          conversation_id: req.params.id,
-          status: "awaiting_approval",
-          current_step: "draft_escalation_ticket",
-          prompt_version: SYSTEM_PROMPT_VERSION,
-        },
-      });
+
+    // One agent_runs row per task that involved a model (or fell back from
+    // one). It carries the path the task took, which is what the console's
+    // flow diagram is rebuilt from — so that history is persistent.
+    let run: { id: string } | null = null;
+    if (answer.flow) {
+      const escalated = Boolean(answer.escalationDraft);
+      try {
+        run = await prisma.agent_runs.create({
+          data: {
+            customer_id: user.id,
+            conversation_id: req.params.id,
+            status: escalated ? "awaiting_approval" : answer.flow.kind === "fallback" ? "failed" : "completed",
+            current_step: escalated ? "draft_escalation_ticket" : "respond",
+            iterations: answer.trace?.filter((s) => s.phase === "plan").length ?? 0,
+            model: answer.flow.model,
+            prompt_version: SYSTEM_PROMPT_VERSION,
+            completed_at: escalated ? null : new Date(),
+            error_message: answer.flow.failureReason ?? null,
+            tool_input: answer.flow as unknown as Prisma.InputJsonValue,
+          },
+        });
+      } catch (err) {
+        // A drafted escalation needs its run row to be reviewable, so that
+        // failure surfaces; plain history must never cost the user their answer.
+        if (escalated) throw err;
+        console.error("Failed to record agent run:", err);
+      }
+    }
+
+    if (answer.escalationDraft && run) {
       const approval = await prisma.agent_approvals.create({
         data: {
           agent_run_id: run.id,

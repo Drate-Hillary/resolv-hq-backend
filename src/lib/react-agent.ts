@@ -32,6 +32,8 @@ export interface ReActResult {
   providerName: string;
   cached: boolean;
   iterations: number;
+  /** Providers tried on the first model call, in order (the last answered it). */
+  attempts: string[];
   trace: ReActStep[];
   /** Set when the loop called draft_escalation_ticket — the structured brief
    * for a human to review, kept alongside `content` rather than requiring
@@ -59,12 +61,14 @@ export async function runReActLoop(
     { role: "user", content: query },
   ];
   const trace: ReActStep[] = [];
+  let attempts: string[] | undefined;
   let escalationDraft: EscalationDraft | undefined;
   const tools = await getActiveToolDefinitions();
   const allowedTools = new Set(tools.map((t) => t.name));
 
   for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     const result = await completeWithFallback(messages, tools);
+    attempts ??= result.attempts ?? [];
 
     if (result.toolCalls && result.toolCalls.length > 0) {
       trace.push({ phase: "plan", detail: `Decided to call: ${result.toolCalls.map((c) => c.name).join(", ")}` });
@@ -107,6 +111,7 @@ export async function runReActLoop(
       providerName: result.providerName,
       cached: result.cached ?? false,
       iterations: iteration,
+      attempts: attempts ?? [],
       trace,
       escalationDraft,
     };
@@ -119,6 +124,7 @@ export async function runReActLoop(
     providerName: "n/a",
     cached: false,
     iterations: MAX_ITERATIONS,
+    attempts: attempts ?? [],
     trace,
     escalationDraft,
   };
