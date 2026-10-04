@@ -41,14 +41,14 @@ export function stagesFromTrace(trace: { phase: FlowStage["phase"]; detail: stri
   });
 }
 
-export const SANKEY_COLUMNS = ["Request", "Model", "Routing", "Reasoning", "Tool", "Outcome"] as const;
-
 export interface SankeyNode {
   name: string;
-  /** Index into SANKEY_COLUMNS — every node sits in a fixed stage column. */
-  column: number;
-  /** Set on model nodes so the console can give each model its own colour. */
+  /** Set on agent-provider nodes so the console can give each its own colour. */
   provider?: string;
+  /** Set on ReAct step nodes (Plan, Act, Observe, Respond). */
+  step?: "sense" | "plan" | "act" | "observe" | "respond";
+  /** Set on decision/outcome nodes so the console can colour each decision. */
+  outcome?: AgentFlowRecord["outcome"] | "idle";
   failure?: boolean;
 }
 
@@ -56,10 +56,8 @@ export interface SankeyLink {
   source: number;
   target: number;
   value: number;
-  /** Model whose tasks this flow carries, so one model's work stays one colour
-   * from the request to the outcome even through shared stage nodes. "fallback"
-   * marks tasks answered by keyword search because no provider could. */
-  model: string;
+  /** Provider whose tasks this flow carries ("fallback" = keyword search). */
+  provider: string;
 }
 
 export interface SankeyFlow {
@@ -69,6 +67,15 @@ export interface SankeyFlow {
   switches: number;
 }
 
+type FlowStep = "sense" | "plan" | "act" | "observe" | "respond";
+const STEP_ORDER: FlowStep[] = ["sense", "plan", "act", "observe", "respond"];
+const STEP_LABEL: Record<FlowStep, string> = { sense: "Sense", plan: "Plan", act: "Act", observe: "Observe", respond: "Respond" };
+// Every task that reached a model first senses (query + context are gathered)
+// and plans (the model decides to answer or to call a tool), even though the
+// trace only logs a "plan" entry when a tool is called. Act and Observe appear
+// only when a tool was actually used.
+const ALWAYS: FlowStep[] = ["sense", "plan", "respond"];
+
 const OUTCOME_LABEL: Record<AgentFlowRecord["outcome"], string> = {
   answered: "Answered",
   escalated: "Escalated for approval",
@@ -77,66 +84,70 @@ const OUTCOME_LABEL: Record<AgentFlowRecord["outcome"], string> = {
 };
 
 /**
- * A true Sankey: six fixed columns (Request → Model → Routing → Reasoning →
- * Tool → Outcome) with one shared node per stage, so work from different
- * models splits at the Model column and merges again at shared stages.
- * Links are kept per model (parallel links between the same two nodes) so the
- * flow keeps its model's colour all the way to the outcome. Link width is the
- * number of tasks, and every task enters and leaves each node it touches, so
- * flow is conserved.
+ * Request splits into one node per registered agent provider (each linked even
+ * before it has handled a task); each provider's tasks flow through the ReAct
+ * steps they used (Sense, Plan, Act, Observe, Respond) to the outcome they ended in. Link width is the number of tasks. Tasks that no
+ * provider could answer go through a separate "Keyword search" node.
  */
-export function buildSankey(flows: AgentFlowRecord[]): SankeyFlow {
-  const nodes: SankeyNode[] = [];
-  const index = new Map<string, number>();
-  const node = (column: number, name: string, extra: Partial<SankeyNode> = {}) => {
-    const key = `${column}:${name}`;
+export function buildSankey(flows: AgentFlowRecord[], registeredProviders: string[]): SankeyFlow {
+  const nodes: SankeyNode[] = [{ name: "Request" }];
+  const index = new Map<string, number>([["request", 0]]);
+  const node = (key: string, n: SankeyNode) => {
     let i = index.get(key);
     if (i === undefined) {
       i = nodes.length;
-      nodes.push({ name, column, ...extra });
+      nodes.push(n);
       index.set(key, i);
     }
     return i;
   };
+  const providerNode = (name: string) => node(`p:${name}`, { name, provider: name });
+  for (const name of registeredProviders) providerNode(name);
+
   const linkValues = new Map<string, SankeyLink>();
-  const link = (source: number, target: number, model: string) => {
-    const k = `${source}>${target}>${model}`;
+  const link = (source: number, target: number, provider: string) => {
+    const k = `${source}>${target}>${provider}`;
     const existing = linkValues.get(k);
     if (existing) existing.value++;
-    else linkValues.set(k, { source, target, value: 1, model });
+    else linkValues.set(k, { source, target, value: 1, provider });
   };
 
   let switches = 0;
   for (const f of flows) {
-    const fallback = f.kind === "fallback";
-    const modelKey = fallback ? "fallback" : [f.provider, f.model].filter(Boolean).join(" · ") || "Unknown model";
-
-    const request = node(0, "Request");
-    const modelNode = fallback
-      ? node(1, "Keyword search", { failure: true })
-      : node(1, modelKey, { provider: modelKey });
-
-    const failedOver = !fallback && f.attempts.length > 1;
-    if (failedOver) switches++;
-    const routing = fallback
-      ? node(2, "No provider available", { failure: true })
-      : node(2, f.cached ? "Cached answer" : failedOver ? "Failover" : "Direct");
-
-    const usedTool = f.stages.find((s) => s.phase === "act");
-    const reasoning = node(3, usedTool ? "Used tools" : "Direct answer");
-    const outcome = node(5, OUTCOME_LABEL[f.outcome], { failure: f.outcome === "fallback" });
-
-    link(request, modelNode, modelKey);
-    link(modelNode, routing, modelKey);
-    link(routing, reasoning, modelKey);
-    if (usedTool) {
-      const tool = node(4, usedTool.label.replace(/^Act · /, ""));
-      link(reasoning, tool, modelKey);
-      link(tool, outcome, modelKey);
-    } else {
-      link(reasoning, outcome, modelKey);
+    if (f.kind === "fallback") {
+      const search = node("fallback", { name: "Keyword search", failure: true });
+      link(0, search, "fallback");
+      link(search, node("out:fallback", { name: OUTCOME_LABEL.fallback, outcome: "fallback", failure: true }), "fallback");
+      continue;
     }
+    const name = f.provider ?? "Unknown provider";
+    if (f.attempts.length > 1) switches++;
+    const p = providerNode(name);
+    link(0, p, name);
+
+    // The steps this task went through, in the order a ReAct loop always runs
+    // them (Sense → Plan → Act → Observe → Respond). Repeated cycles collapse into
+    // one visit per step so the graph stays acyclic.
+    let prev = p;
+    for (const phase of STEP_ORDER) {
+      if (!ALWAYS.includes(phase) && !f.stages.some((s) => s.phase === phase)) continue;
+      const step = node(`step:${phase}`, { name: STEP_LABEL[phase], step: phase });
+      link(prev, step, name);
+      prev = step;
+    }
+    link(prev, node(`out:${f.outcome}`, { name: OUTCOME_LABEL[f.outcome], outcome: f.outcome }), name);
   }
 
-  return { nodes, links: [...linkValues.values()], totalTasks: flows.length, switches };
+  // A registered provider that hasn't handled a task still gets its link from
+  // Request (value 0, drawn at a minimum width by the console), so the split
+  // always shows every provider.
+  const links = [...linkValues.values()];
+  for (const name of registeredProviders) {
+    const p = index.get(`p:${name}`)!;
+    if (links.some((l) => l.target === p)) continue;
+    links.push({ source: 0, target: p, value: 0, provider: name });
+    links.push({ source: p, target: node("out:idle", { name: "No tasks yet", outcome: "idle" }), value: 0, provider: name });
+  }
+
+  return { nodes, links, totalTasks: flows.length, switches };
 }
