@@ -4,6 +4,7 @@ import { formatEscalationDraft, type EscalationDraft } from "../lib/agent-tools.
 import { generateAssistantReply, type AiAccountInput, type AiKnowledgeInput, type AiRequestInput } from "../lib/ai.js";
 import { badRequest, notFound } from "../lib/errors.js";
 import { formatMemberSince, mapChatMessageRow, mapConversationRow } from "../lib/mappers.js";
+import { attachSemanticScores } from "../lib/embeddings.js";
 import { loadPublishedPassages } from "../lib/knowledge-index.js";
 import { notifyStaff } from "../lib/notify.js";
 import { assertConversationAccess } from "../lib/ownership.js";
@@ -117,7 +118,7 @@ router.post(
     const finalIds = await finalStatusIds();
 
     const [docs, requests, account] = await Promise.all([
-      loadPublishedPassages(),
+      loadPublishedPassages().then((passages) => attachSemanticScores(content, passages)),
       (isStaff(user.role)
         ? prisma.requests.findMany({
             where: finalIds.length > 0 ? { status_id: { notIn: finalIds } } : undefined,
