@@ -95,8 +95,11 @@ export interface EscalationDraft {
 function searchKnowledgeBase(args: Record<string, unknown>, knowledge: AiKnowledgeInput[]): string {
   const query = typeof args.query === "string" ? args.query : "";
   const ranked = knowledge
-    .filter((doc) => isRelevant(query, `${doc.title} ${doc.content}`))
-    .map((doc) => ({ doc, score: scoreText(query, `${doc.title} ${doc.content}`) }))
+    .filter((doc) => doc.semanticScore !== undefined || isRelevant(query, `${doc.title} ${doc.content}`))
+    .map((doc) => ({
+      doc,
+      score: scoreText(query, `${doc.title} ${doc.content}`) + (doc.semanticScore ?? 0) * 10,
+    }))
     .sort((a, b) => b.score - a.score || a.doc.content.length - b.doc.content.length)
     .slice(0, 3);
 

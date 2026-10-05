@@ -11,6 +11,7 @@
 import type { EscalationDraft } from "./agent-tools.js";
 import { detectBoundaryViolation } from "./ai-boundary.js";
 import { checkForClarification } from "./clarification.js";
+import { packIntoBudget } from "./context-budget.js";
 import { buildSystemPrompt } from "./prompts/system-prompt.js";
 import { runReActLoop, type ReActStep } from "./react-agent.js";
 import { isRelevant, queryTerms, scoreText } from "./text-match.js";
@@ -23,6 +24,9 @@ export interface AiKnowledgeInput {
   title: string;
   content: string;
   page?: number;
+  heading?: string;
+  /** Cosine similarity to the query when semantic search matched this passage (lib/embeddings.ts). */
+  semanticScore?: number;
 }
 
 export interface AiRequestInput {
@@ -178,9 +182,15 @@ function toSources(
 }
 
 function rankKnowledge(query: string, knowledge: AiKnowledgeInput[]): { doc: AiKnowledgeInput; score: number }[] {
+  // Hybrid retrieval: a passage counts if it matches by keyword OR was a
+  // semantic hit, and a semantic hit adds to its rank (similarity 0.5 is
+  // worth ~5 keyword points) so paraphrased questions still find the passage.
   return knowledge
-    .filter((doc) => isRelevant(query, `${doc.title} ${doc.content}`))
-    .map((doc) => ({ doc, score: scoreText(query, `${doc.title} ${doc.content}`) }))
+    .filter((doc) => doc.semanticScore !== undefined || isRelevant(query, `${doc.title} ${doc.content}`))
+    .map((doc) => ({
+      doc,
+      score: scoreText(query, `${doc.title} ${doc.content}`) + (doc.semanticScore ?? 0) * 10,
+    }))
     .sort((a, b) => b.score - a.score || a.doc.content.length - b.doc.content.length);
 }
 
@@ -221,10 +231,14 @@ export async function generateAssistantReply(
 
   try {
     const ranked = rankKnowledge(query, knowledge);
-    const knowledgeContext = ranked
-      .slice(0, 5)
-      .map(({ doc: d }) => `### ${d.title}${d.page ? ` (page ${d.page})` : ""}\n${d.content.slice(0, 800)}`)
-      .join("\n\n");
+    // Best-first passages packed into a size budget (lib/context-budget.ts)
+    // rather than a fixed count and length, so context size stays predictable.
+    const knowledgeContext = packIntoBudget(
+      ranked.map(
+        ({ doc: d }) =>
+          `### ${d.title}${d.heading ? ` - ${d.heading}` : ""}${d.page ? ` (page ${d.page})` : ""}\n${d.content}`,
+      ),
+    );
     const requestContext = activeRequests
       .slice(0, 5)
       .map((r) => `- "${r.title}": ${r.status}`)

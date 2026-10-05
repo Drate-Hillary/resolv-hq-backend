@@ -39,7 +39,7 @@ function cacheKey(messages: LlmMessage[], tools?: LlmToolDefinition[]): string {
   return `llm:cache:${hash}`;
 }
 
-function buildClient(row: { provider: string; model: string | null; api_key: string }): LlmClient | null {
+export function buildClient(row: { provider: string; model: string | null; api_key: string }): LlmClient | null {
   switch (row.provider) {
     case "openai":
       return new OpenAiClient(row.api_key, row.model);

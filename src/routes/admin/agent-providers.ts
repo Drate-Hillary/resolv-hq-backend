@@ -4,6 +4,8 @@ import { Router } from "express";
 import { requireRole } from "../../lib/auth.js";
 import { badRequest, notFound } from "../../lib/errors.js";
 import { buildSankey, type AgentFlowRecord } from "../../lib/llm/flow-log.js";
+import { buildClient } from "../../lib/llm/gateway.js";
+import { evaluateClient } from "../../lib/llm/evaluate.js";
 import { isNotFound } from "../../lib/prisma-errors.js";
 import { prisma } from "../../lib/prisma.js";
 import { asyncRoute } from "../../middleware/error-handler.js";
@@ -111,6 +113,21 @@ router.patch(
     }
 
     res.json(toPublic(data));
+  }),
+);
+
+/** Runs the evaluation suite against one provider, regardless of its active/disabled status. */
+router.post(
+  "/:id/evaluate",
+  asyncRoute(async (req: Request, res: Response) => {
+    const row = await prisma.agent_providers.findUnique({
+      where: { id: req.params.id },
+      select: { provider: true, model: true, api_key: true },
+    });
+    if (!row) throw notFound("Provider not found");
+    const client = buildClient(row);
+    if (!client) throw badRequest(`Provider "${row.provider}" has no client implementation yet`);
+    res.json(await evaluateClient(client));
   }),
 );
 

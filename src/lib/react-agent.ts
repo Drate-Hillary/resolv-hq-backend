@@ -17,6 +17,7 @@
 //            rather than looping forever.
 import { buildEscalationDraft, executeAgentTool, type EscalationDraft } from "./agent-tools.js";
 import type { AiAccountInput, AiKnowledgeInput, AiRequestInput } from "./ai.js";
+import { TOOL_OBSERVATION_BUDGET_CHARS, truncateAtBoundary } from "./context-budget.js";
 import { completeWithFallback } from "./llm/gateway.js";
 import type { LlmMessage } from "./llm/types.js";
 import { getActiveToolDefinitions } from "./tool-registry.js";
@@ -98,7 +99,11 @@ export async function runReActLoop(
           escalationDraft = buildEscalationDraft(call.arguments) ?? escalationDraft;
         }
         trace.push({ phase: "observe", detail: observation.slice(0, 200) });
-        messages.push({ role: "tool", toolCallId: call.id, content: observation });
+        messages.push({
+          role: "tool",
+          toolCallId: call.id,
+          content: truncateAtBoundary(observation, TOOL_OBSERVATION_BUDGET_CHARS),
+        });
       }
 
       continue;

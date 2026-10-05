@@ -5,6 +5,7 @@ import multer from "multer";
 import { requireRole } from "../../lib/auth.js";
 import { badRequest, notFound } from "../../lib/errors.js";
 import { deleteKnowledgeFile, getKnowledgeFileSignedUrl, uploadKnowledgeFile } from "../../lib/knowledge-storage.js";
+import { embedDocumentChunks } from "../../lib/embeddings.js";
 import { extractPages, indexPages, isIndexable, reindexDocument } from "../../lib/knowledge-index.js";
 import { isNotFound } from "../../lib/prisma-errors.js";
 import { prisma } from "../../lib/prisma.js";
@@ -128,6 +129,14 @@ router.patch(
     }
 
     res.json(data);
+  }),
+);
+
+/** Embeds every passage that has none yet (existing documents, or ones indexed before an OpenAI provider was added). */
+router.post(
+  "/embed-missing",
+  asyncRoute(async (_req: Request, res: Response) => {
+    res.json({ embedded: await embedDocumentChunks() });
   }),
 );
 
