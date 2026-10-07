@@ -16,6 +16,7 @@ import { redis } from "../redis.js";
 import { prisma } from "../prisma.js";
 import { AnthropicClient } from "./providers/anthropic.js";
 import { GoogleClient } from "./providers/google.js";
+import { LangChainClient } from "./providers/langchain.js";
 import { OpenAiClient } from "./providers/openai.js";
 import { withRetry } from "./retry.js";
 import type { LlmClient, LlmMessage, LlmToolCall, LlmToolDefinition } from "./types.js";
@@ -47,6 +48,8 @@ export function buildClient(row: { provider: string; model: string | null; api_k
       return new AnthropicClient(row.api_key, row.model);
     case "google":
       return new GoogleClient(row.api_key, row.model);
+    case "langchain":
+      return new LangChainClient(row.api_key, row.model);
     default:
       // "custom" is registerable today but has no client
       // implementation yet — add a providers/<name>.ts and a case here.
