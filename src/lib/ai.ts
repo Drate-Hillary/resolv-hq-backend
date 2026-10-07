@@ -16,6 +16,7 @@ import { buildSystemPrompt } from "./prompts/system-prompt.js";
 import { runReActLoop, type ReActStep } from "./react-agent.js";
 import { isRelevant, queryTerms, scoreText } from "./text-match.js";
 import { stagesFromTrace, type AgentFlowRecord } from "./llm/flow-log.js";
+import { GatewayUnavailableError, type ProviderHandoff } from "./llm/gateway.js";
 
 /** One retrievable passage of a knowledge document (see lib/knowledge-index.ts) — not the whole document. */
 export interface AiKnowledgeInput {
@@ -71,6 +72,15 @@ const DEFAULT_STEPS = [
   "Finding relevant guidance",
   "Preparing your response",
 ];
+
+function describeHandoff(handoff: ProviderHandoff): string {
+  const cause = handoff.reason === "usage_limit"
+    ? "hit a quota, rate, or token limit"
+    : handoff.reason === "unsupported"
+      ? "cannot run this provider"
+      : "became unavailable";
+  return `Handoff: ${handoff.from} ${cause}; passing the task and conversation context to ${handoff.to}`;
+}
 
 function scoreArticle(query: string, haystack: string): number {
   const words = query
@@ -281,6 +291,7 @@ export async function generateAssistantReply(
       suggestions: [],
       steps: [
         DEFAULT_STEPS[0],
+        ...result.handoffs.map(describeHandoff),
         result.cached ? "Found a cached answer" : `Calling ${result.providerName} (${result.model})`,
         ...traceSteps,
         violation ? "Blocked a boundary-matrix violation" : undefined,
@@ -293,6 +304,7 @@ export async function generateAssistantReply(
         provider: result.providerName,
         model: result.model,
         attempts: result.attempts,
+        handoffs: result.handoffs,
         cached: result.cached,
         stages: stagesFromTrace(result.trace),
         outcome: violation ? "blocked" : result.escalationDraft ? "escalated" : "answered",
@@ -300,15 +312,24 @@ export async function generateAssistantReply(
     };
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
+    const gatewayError = err instanceof GatewayUnavailableError ? err : null;
+    const handoffs = gatewayError?.handoffs ?? [];
+    const fallbackAnswer = answerQuestion(query, knowledge, activeRequests);
     console.error(`LLM gateway unavailable, falling back to keyword search: ${reason}`);
     return {
-      ...answerQuestion(query, knowledge, activeRequests),
+      ...fallbackAnswer,
+      steps: [
+        ...fallbackAnswer.steps,
+        ...handoffs.map(describeHandoff),
+        ...(handoffs.length > 0 ? ["No model provider could continue; handing the task to knowledge-base search"] : []),
+      ],
       fallbackReason: reason,
       flow: {
         kind: "fallback",
         provider: null,
         model: null,
-        attempts: [],
+        attempts: gatewayError?.attempts ?? [],
+        handoffs,
         cached: false,
         stages: [],
         outcome: "fallback",

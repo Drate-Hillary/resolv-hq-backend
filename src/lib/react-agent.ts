@@ -18,7 +18,12 @@
 import { buildEscalationDraft, executeAgentTool, type EscalationDraft } from "./agent-tools.js";
 import type { AiAccountInput, AiKnowledgeInput, AiRequestInput } from "./ai.js";
 import { TOOL_OBSERVATION_BUDGET_CHARS, truncateAtBoundary } from "./context-budget.js";
-import { completeWithFallback } from "./llm/gateway.js";
+import {
+  completeWithFallback,
+  GatewayUnavailableError,
+  type GatewayResult,
+  type ProviderHandoff,
+} from "./llm/gateway.js";
 import type { LlmMessage } from "./llm/types.js";
 import { getActiveToolDefinitions } from "./tool-registry.js";
 
@@ -35,6 +40,7 @@ export interface ReActResult {
   iterations: number;
   /** Providers tried on the first model call, in order (the last answered it). */
   attempts: string[];
+  handoffs: ProviderHandoff[];
   trace: ReActStep[];
   /** Set when the loop called draft_escalation_ticket — the structured brief
    * for a human to review, kept alongside `content` rather than requiring
@@ -63,13 +69,41 @@ export async function runReActLoop(
   ];
   const trace: ReActStep[] = [];
   let attempts: string[] | undefined;
+  const handoffs: ProviderHandoff[] = [];
+  const excludedProviderIds = new Set<string>();
   let escalationDraft: EscalationDraft | undefined;
   const tools = await getActiveToolDefinitions();
   const allowedTools = new Set(tools.map((t) => t.name));
 
   for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
-    const result = await completeWithFallback(messages, tools);
+    let result: GatewayResult;
+    try {
+      result = await completeWithFallback(messages, tools, [...excludedProviderIds]);
+    } catch (err) {
+      if (err instanceof GatewayUnavailableError) {
+        const allHandoffs = new Map(
+          [...handoffs, ...err.handoffs].map((handoff) => [
+            `${handoff.from}:${handoff.to}:${handoff.reason}`,
+            handoff,
+          ]),
+        );
+        throw new GatewayUnavailableError(
+          err.message,
+          [...new Set([...(attempts ?? []), ...err.attempts])],
+          [...new Set([...excludedProviderIds, ...err.failedProviderIds])],
+          [...allHandoffs.values()],
+        );
+      }
+      throw err;
+    }
     attempts ??= result.attempts ?? [];
+    for (const providerId of result.failedProviderIds ?? []) excludedProviderIds.add(providerId);
+    for (const handoff of result.handoffs ?? []) {
+      const alreadyRecorded = handoffs.some(
+        (item) => item.from === handoff.from && item.to === handoff.to && item.reason === handoff.reason,
+      );
+      if (!alreadyRecorded) handoffs.push(handoff);
+    }
 
     if (result.toolCalls && result.toolCalls.length > 0) {
       trace.push({ phase: "plan", detail: `Decided to call: ${result.toolCalls.map((c) => c.name).join(", ")}` });
@@ -117,6 +151,7 @@ export async function runReActLoop(
       cached: result.cached ?? false,
       iterations: iteration,
       attempts: attempts ?? [],
+      handoffs,
       trace,
       escalationDraft,
     };
@@ -130,6 +165,7 @@ export async function runReActLoop(
     cached: false,
     iterations: MAX_ITERATIONS,
     attempts: attempts ?? [],
+    handoffs,
     trace,
     escalationDraft,
   };

@@ -19,6 +19,11 @@ export interface AgentFlowRecord {
   /** Providers tried on the task's first model call, in order; the last is the
    * one that answered when kind is "model". */
   attempts: string[];
+  handoffs?: {
+    from: string;
+    to: string;
+    reason: "usage_limit" | "provider_error" | "unsupported";
+  }[];
   cached: boolean;
   stages: FlowStage[];
   outcome: "answered" | "escalated" | "blocked" | "fallback";
