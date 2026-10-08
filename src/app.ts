@@ -16,6 +16,7 @@ import aiRouter from "./routes/ai.js";
 
 import knowledgeRouter from "./routes/knowledge.js";
 import adminDashboardRouter from "./routes/admin/dashboard.js";
+import adminMemoryRouter from "./routes/admin/memory.js";
 import adminKnowledgeRouter from "./routes/admin/knowledge.js";
 import adminKnowledgeCategoriesRouter from "./routes/admin/knowledge-categories.js";
 import adminToolsRouter from "./routes/admin/tools.js";
@@ -60,6 +61,7 @@ export function createApp() {
   app.use("/knowledge", knowledgeRouter);
 
   app.use("/admin/dashboard", adminDashboardRouter);
+  app.use("/admin/memory", adminMemoryRouter);
   app.use("/admin/knowledge", adminKnowledgeRouter);
   app.use("/admin/knowledge-categories", adminKnowledgeCategoriesRouter);
   app.use("/admin/tools", adminToolsRouter);

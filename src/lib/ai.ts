@@ -45,6 +45,11 @@ export interface AiAccountInput {
   memberSince: string;
 }
 
+export interface AiMemoryInput {
+  key: string;
+  value: string;
+}
+
 export interface AiAnswer {
   text: string;
   sources: { id: string; title: string; score?: number; pages?: number[] }[];
@@ -214,6 +219,7 @@ export async function generateAssistantReply(
   activeRequests: AiRequestInput[],
   account: AiAccountInput,
   isStaffCaller = false,
+  customerMemory: AiMemoryInput[] = [],
 ): Promise<AiAnswer> {
   // Clarification Prompting Logic: a deterministic gate, not a prompt
   // instruction — runs before the LLM (or the keyword fallback) ever sees
@@ -253,8 +259,17 @@ export async function generateAssistantReply(
       .slice(0, 5)
       .map((r) => `- "${r.title}": ${r.status}`)
       .join("\n");
+    const memoryContext = packIntoBudget(
+      customerMemory.map(({ key, value }) => `- ${JSON.stringify(key)}: ${JSON.stringify(value)}`),
+      Number(process.env.CUSTOMER_MEMORY_CONTEXT_BUDGET_CHARS) || 1200,
+    );
 
-    const systemPrompt = buildSystemPrompt({ knowledgeContext, requestContext, isStaffCaller });
+    const systemPrompt = buildSystemPrompt({
+      knowledgeContext,
+      requestContext,
+      customerMemoryContext: memoryContext,
+      isStaffCaller,
+    });
 
     // ReAct Loop Core Implementation (lib/react-agent.ts): Sense (query +
     // context, above) -> Plan -> Act -> Observe, repeated until the model
