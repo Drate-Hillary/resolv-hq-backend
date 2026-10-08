@@ -5,6 +5,7 @@ import { requireRole } from "../../lib/auth.js";
 import { badRequest, HttpError, notFound } from "../../lib/errors.js";
 import { isNotFound, isUniqueViolation } from "../../lib/prisma-errors.js";
 import { prisma } from "../../lib/prisma.js";
+import { AGENT_TOOL_DEFINITIONS } from "../../lib/agent-tools.js";
 import { BUILT_IN_TOOL_NAMES, syncBuiltInTools } from "../../lib/tool-registry.js";
 import { asyncRoute } from "../../middleware/error-handler.js";
 
@@ -18,7 +19,14 @@ router.get(
     const rows = await prisma.agent_tools.findMany({ orderBy: { name: "asc" } });
     // `executable`: has a code handler the agent can run. Registered tools
     // without one are catalogue-only and never offered to the model.
-    res.json(rows.map((r) => ({ ...r, executable: BUILT_IN_TOOL_NAMES.has(r.name) })));
+    const definitions = new Map(AGENT_TOOL_DEFINITIONS.map((tool) => [tool.name, tool]));
+    res.json(
+      rows.map((row) => ({
+        ...row,
+        executable: BUILT_IN_TOOL_NAMES.has(row.name),
+        inputSchema: definitions.get(row.name)?.parameters ?? null,
+      })),
+    );
   }),
 );
 

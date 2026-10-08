@@ -20,14 +20,31 @@ router.get(
   }),
 );
 
+router.delete(
+  "/",
+  requireRole("customer"),
+  asyncRoute(async (req: Request, res: Response) => {
+    await prisma.customer_memory.deleteMany({
+      where: { customer_id: req.user!.id },
+    });
+    res.status(204).end();
+  }),
+);
+
 /** Scoped by customer_id, not just id, so a customer can't touch another
  * customer's memory by guessing an id. */
 router.patch(
   "/:id",
   requireRole("customer"),
   asyncRoute(async (req: Request, res: Response) => {
-    const { value } = req.body as { value?: string };
-    if (typeof value !== "string" || !value.trim()) throw badRequest("value is required");
+    const { value, enabled } = req.body as { value?: string; enabled?: boolean };
+    if (value === undefined && enabled === undefined) throw badRequest("value or enabled is required");
+    if (value !== undefined && (typeof value !== "string" || !value.trim())) {
+      throw badRequest("value must be a non-empty string");
+    }
+    if (enabled !== undefined && typeof enabled !== "boolean") {
+      throw badRequest("enabled must be a boolean");
+    }
 
     const existing = await prisma.customer_memory.findFirst({
       where: { id: req.params.id, customer_id: req.user!.id },
@@ -36,7 +53,10 @@ router.patch(
 
     const data = (await prisma.customer_memory.update({
       where: { id: req.params.id },
-      data: { memory_value: value },
+      data: {
+        ...(value !== undefined ? { memory_value: value.trim() } : {}),
+        ...(enabled !== undefined ? { is_enabled: enabled } : {}),
+      },
     })) as unknown as CustomerMemoryRow;
     res.json(mapMemoryRow(data));
   }),

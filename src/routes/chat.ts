@@ -1,7 +1,13 @@
 import { Prisma } from "@prisma/client";
 import { Router, type Request, type Response } from "express";
 import { formatEscalationDraft, type EscalationDraft } from "../lib/agent-tools.js";
-import { generateAssistantReply, type AiAccountInput, type AiKnowledgeInput, type AiRequestInput } from "../lib/ai.js";
+import {
+  generateAssistantReply,
+  type AiAccountInput,
+  type AiKnowledgeInput,
+  type AiMemoryInput,
+  type AiRequestInput,
+} from "../lib/ai.js";
 import { badRequest, notFound } from "../lib/errors.js";
 import { formatMemberSince, mapChatMessageRow, mapConversationRow } from "../lib/mappers.js";
 import { attachSemanticScores } from "../lib/embeddings.js";
@@ -39,6 +45,24 @@ async function loadAccountInput(userId: string, role: string): Promise<AiAccount
     country: customerProfile?.country ?? "Uganda",
     memberSince: profile ? formatMemberSince(profile.created_at as unknown as string) : "unknown",
   };
+}
+
+async function loadCustomerMemory(userId: string, role: string): Promise<AiMemoryInput[]> {
+  if (role !== "customer") return [];
+
+  const preferences = await prisma.customer_profiles.findUnique({
+    where: { user_id: userId },
+    select: { memory_enabled: true },
+  });
+  if (!preferences?.memory_enabled) return [];
+
+  const facts = await prisma.customer_memory.findMany({
+    where: { customer_id: userId, is_enabled: true },
+    select: { memory_key: true, memory_value: true },
+    orderBy: { updated_at: "desc" },
+  });
+
+  return facts.map(({ memory_key, memory_value }) => ({ key: memory_key, value: memory_value }));
 }
 
 /**
@@ -117,7 +141,7 @@ router.post(
     const statusNameById = new Map(statuses.map((s) => [s.id, s.name]));
     const finalIds = await finalStatusIds();
 
-    const [docs, requests, account] = await Promise.all([
+    const [docs, requests, account, customerMemory] = await Promise.all([
       loadPublishedPassages().then((passages) => attachSemanticScores(content, passages)),
       (isStaff(user.role)
         ? prisma.requests.findMany({
@@ -125,6 +149,7 @@ router.post(
           })
         : prisma.requests.findMany({ where: { customer_id: user.id } })) as unknown as Promise<RequestRow[]>,
       loadAccountInput(user.id, user.role),
+      loadCustomerMemory(user.id, user.role),
     ]);
 
     // Page-level passages, not whole documents: the agent retrieves the
@@ -136,7 +161,14 @@ router.post(
       status: r.status_id ? statusNameById.get(r.status_id) ?? "unknown" : "unknown",
     }));
 
-    const answer = await generateAssistantReply(content, knowledgeInputs, requestInputs, account, isStaff(user.role));
+    const answer = await generateAssistantReply(
+      content,
+      knowledgeInputs,
+      requestInputs,
+      account,
+      isStaff(user.role),
+      customerMemory,
+    );
 
     const assistantRow = (await prisma.ai_messages.create({
       data: {
