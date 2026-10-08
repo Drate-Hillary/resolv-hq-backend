@@ -7,6 +7,52 @@ on:
     branches: [ "Dev" ]
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    # Spins up a temporary PostgreSQL database for your tests
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: test_user
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_DB: resolv_test_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+          
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20' # Adjust to match your local environment
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma Client
+        run: npx prisma generate
+        
+      - name: Run Database Migrations
+        env:
+          DATABASE_URL: postgresql://test_user:test_password@localhost:5432/resolv_test_db
+        run: npx prisma migrate deploy
+
+      - name: Run tests
+        env:
+          # Points your tests to the temporary CI database
+          DATABASE_URL: postgresql://test_user:test_password@localhost:5432/resolv_test_db
+        run: npm run test
+        
   build:
     runs-on: ubuntu-latest
     
@@ -48,3 +94,36 @@ jobs:
           # Enables caching to significantly speed up future builds
           cache-from: type=gha
           cache-to: type=gha,mode=max
+  
+  deploy:
+    needs: build
+    # Only run the deployment if the trigger was a push to Dev, not a PR
+    if: github.event_name != 'pull_request'
+    runs-on: self-hosted
+    
+    steps:
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Set lowercase image repository
+        run: echo "IMAGE_REPOSITORY=${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
+      - name: Pull and Restart Container
+        run: |
+          # Pull the newly built image from GHCR
+          docker pull ghcr.io/${{ env.IMAGE_REPOSITORY }}:dev
+          
+          # Stop and remove the old container (suppressing errors if it doesn't exist)
+          docker stop resolv-hq-backend || true
+          docker rm resolv-hq-backend || true
+          
+          # Run the new container (adjust ports and env vars as needed for your backend)
+          docker run -d \
+            --name resolv-hq-backend \
+            --restart unless-stopped \
+            -p 8080:8080 \
+            ghcr.io/${{ env.IMAGE_REPOSITORY }}:dev
