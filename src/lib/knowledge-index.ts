@@ -78,7 +78,7 @@ export interface Chunk {
   heading?: string;
 }
 
-const HEADING_LINE = /^(?:#{1,6}\s+\S.*|\d+(?:\.\d+)*\.?\s+[A-Z][^.!?]{2,80}|[A-Z][A-Z0-9 &/\-]{3,60})$/;
+const HEADING_LINE = /^(?:#{1,6}\s+\S.*|\d+(?:\.\d+)*\.?\s+[A-Z][^.!?]{2,80}|[A-Z][A-Z0-9 &/-]{3,60})$/;
 
 /** Splits a page into sections on heading-looking lines (markdown "#", "2.1 Title", ALL CAPS). */
 function splitSections(text: string): { heading?: string; body: string }[] {

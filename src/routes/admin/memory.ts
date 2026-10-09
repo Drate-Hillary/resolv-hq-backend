@@ -2,6 +2,7 @@ import type { Request, Response } from "express";
 import { Router } from "express";
 import { requireRole } from "../../lib/auth.js";
 import { badRequest, HttpError, notFound } from "../../lib/errors.js";
+import { validateKeyAndValue } from "../../lib/memory-input.js";
 import { mapMemoryRow } from "../../lib/mappers.js";
 import { isUniqueViolation } from "../../lib/prisma-errors.js";
 import { prisma } from "../../lib/prisma.js";
@@ -11,8 +12,6 @@ import type { CustomerMemoryRow } from "../../types/database.types.js";
 const router = Router();
 router.use(requireRole("staff"));
 
-const KEY_PATTERN = /^[a-zA-Z][a-zA-Z0-9_.-]{0,63}$/;
-const MAX_MEMORY_VALUE_LENGTH = 2000;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function mapAgentMemory(record: {
@@ -22,16 +21,6 @@ function mapAgentMemory(record: {
   is_enabled: boolean;
 }) {
   return { id: record.id, key: record.memory_key, value: record.value, enabled: record.is_enabled };
-}
-
-function validateKeyAndValue(key: unknown, value: unknown) {
-  if (typeof key !== "string" || !KEY_PATTERN.test(key.trim())) {
-    throw badRequest("key must start with a letter and contain only letters, digits, _, . or - (max 64 chars)");
-  }
-  if (typeof value !== "string" || !value.trim() || value.trim().length > MAX_MEMORY_VALUE_LENGTH) {
-    throw badRequest(`value must contain 1 to ${MAX_MEMORY_VALUE_LENGTH} characters`);
-  }
-  return { key: key.trim(), value: value.trim() };
 }
 
 function throwMemoryKeyConflict(error: unknown): void {

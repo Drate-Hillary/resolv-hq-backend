@@ -92,7 +92,12 @@ export interface EscalationDraft {
   suggestedAction: string | null;
 }
 
-function searchKnowledgeBase(args: Record<string, unknown>, knowledge: AiKnowledgeInput[]): string {
+export interface KnowledgeSearchResult {
+  matches: { title: string; page: number | null; excerpt: string }[];
+  message: string;
+}
+
+export function searchKnowledgeBaseResult(args: Record<string, unknown>, knowledge: AiKnowledgeInput[]): KnowledgeSearchResult {
   const query = typeof args.query === "string" ? args.query : "";
   const ranked = knowledge
     .filter((doc) => doc.semanticScore !== undefined || isRelevant(query, `${doc.title} ${doc.content}`))
@@ -103,10 +108,27 @@ function searchKnowledgeBase(args: Record<string, unknown>, knowledge: AiKnowled
     .sort((a, b) => b.score - a.score || a.doc.content.length - b.doc.content.length)
     .slice(0, 3);
 
-  if (ranked.length === 0) return "No matching knowledge base articles found.";
-  return ranked
-    .map((r) => `### ${r.doc.title}${r.doc.page ? ` (page ${r.doc.page})` : ""}\n${r.doc.content.slice(0, 500)}`)
+  const matches = ranked.map(({ doc }) => ({
+    title: doc.title,
+    page: doc.page ?? null,
+    excerpt: doc.content.slice(0, 500),
+  }));
+  return {
+    matches,
+    message: matches.length > 0 ? "Matching published knowledge passages found." : "No matching knowledge base articles found.",
+  };
+}
+
+function searchKnowledgeBase(args: Record<string, unknown>, knowledge: AiKnowledgeInput[]): string {
+  const result = searchKnowledgeBaseResult(args, knowledge);
+  if (result.matches.length === 0) return result.message;
+  return result.matches
+    .map((match) => `### ${match.title}${match.page ? ` (page ${match.page})` : ""}\n${match.excerpt}`)
     .join("\n\n");
+}
+
+export function accountStatusLookupResult(account: AiAccountInput): AiAccountInput {
+  return account;
 }
 
 function accountStatusLookup(account: AiAccountInput): string {
@@ -118,6 +140,16 @@ function accountStatusLookup(account: AiAccountInput): string {
     `Member since: ${account.memberSince}`,
   ];
   return parts.filter(Boolean).join("\n");
+}
+
+export function outageStatusCheckerResult(activeRequests: AiRequestInput[]) {
+  return {
+    openIssues: activeRequests.map(({ title, status }) => ({ title, status })),
+    message:
+      activeRequests.length === 0
+        ? "No known open issues — nothing currently on file is unresolved."
+        : `${activeRequests.length} unresolved support request(s) found.`,
+  };
 }
 
 function outageStatusChecker(activeRequests: AiRequestInput[]): string {

@@ -1,8 +1,27 @@
 import type { NextFunction, Request, Response } from "express";
 import { authClient } from "./supabase.js";
-import { unauthorized } from "./errors.js";
+import { forbidden, unauthorized } from "./errors.js";
 import { prisma } from "./prisma.js";
 import type { UserRole } from "../types/database.types.js";
+
+export interface AuthenticatedUser {
+  id: string;
+  role: UserRole;
+}
+
+export async function authenticateAccessToken(token: string): Promise<AuthenticatedUser> {
+  const { data, error } = await authClient.auth.getClaims(token);
+  if (error || !data?.claims?.sub) throw unauthorized("Invalid or expired token");
+  const userId = data.claims.sub;
+
+  const profile = await prisma.profiles.findUnique({
+    where: { id: userId },
+    select: { role: true },
+  });
+  if (!profile) throw unauthorized("No profile for this user");
+
+  return { id: userId, role: profile.role as UserRole };
+}
 
 /**
  * Verifies the caller's Supabase access token (Authorization: Bearer <token>)
@@ -24,18 +43,7 @@ export async function requireAuth(req: Request, _res: Response, next: NextFuncti
     const header = req.headers.authorization;
     const token = header?.startsWith("Bearer ") ? header.slice("Bearer ".length) : null;
     if (!token) throw unauthorized("Missing bearer token");
-
-    const { data, error } = await authClient.auth.getClaims(token);
-    if (error || !data?.claims?.sub) throw unauthorized("Invalid or expired token");
-    const userId = data.claims.sub;
-
-    const profile = await prisma.profiles.findUnique({
-      where: { id: userId },
-      select: { role: true },
-    });
-    if (!profile) throw unauthorized("No profile for this user");
-
-    req.user = { id: userId, role: profile.role as UserRole };
+    req.user = await authenticateAccessToken(token);
     next();
   } catch (err) {
     next(err);
@@ -53,7 +61,7 @@ export function requireRole(kind: "staff" | "customer") {
       kind === "staff"
         ? req.user.role === "admin" || req.user.role === "agent"
         : req.user.role === "customer";
-    if (!ok) return next(unauthorized(`Requires ${kind} role`));
+    if (!ok) return next(forbidden(`Requires ${kind} role`));
     next();
   };
 }
