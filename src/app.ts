@@ -13,6 +13,7 @@ import helpArticlesRouter from "./routes/help-articles.js";
 import memoryRouter from "./routes/memory.js";
 import chatRouter from "./routes/chat.js";
 import aiRouter from "./routes/ai.js";
+import mcpRouter from "./routes/mcp.js";
 
 import knowledgeRouter from "./routes/knowledge.js";
 import adminDashboardRouter from "./routes/admin/dashboard.js";
@@ -59,6 +60,7 @@ export function createApp() {
   app.use("/chat", rateLimit({ keyPrefix: "chat", max: 20, windowMs: 60 * 1000 }), chatRouter);
   app.use("/ai", aiRouter);
   app.use("/knowledge", knowledgeRouter);
+  app.use("/mcp", rateLimit({ keyPrefix: "mcp", max: 60, windowMs: 60 * 1000 }), mcpRouter);
 
   app.use("/admin/dashboard", adminDashboardRouter);
   app.use("/admin/memory", adminMemoryRouter);

@@ -1,69 +1,19 @@
 import { Prisma } from "@prisma/client";
 import { Router, type Request, type Response } from "express";
 import { formatEscalationDraft, type EscalationDraft } from "../lib/agent-tools.js";
-import {
-  generateAssistantReply,
-  type AiAccountInput,
-  type AiKnowledgeInput,
-  type AiMemoryInput,
-  type AiRequestInput,
-} from "../lib/ai.js";
+import { generateAssistantReply } from "../lib/ai.js";
 import { badRequest, notFound } from "../lib/errors.js";
-import { formatMemberSince, mapChatMessageRow, mapConversationRow } from "../lib/mappers.js";
-import { attachSemanticScores } from "../lib/embeddings.js";
-import { loadPublishedPassages } from "../lib/knowledge-index.js";
+import { mapChatMessageRow, mapConversationRow } from "../lib/mappers.js";
+import { isStaffRole, loadCallerAccount, loadCallerKnowledge, loadCallerRequests } from "../lib/agent-tool-context.js";
 import { notifyStaff } from "../lib/notify.js";
 import { assertConversationAccess } from "../lib/ownership.js";
 import { SYSTEM_PROMPT_VERSION } from "../lib/prompts/system-prompt.js";
-import { finalStatusIds, loadStatuses } from "../lib/statuses.js";
 import { prisma } from "../lib/prisma.js";
+import { loadCustomerMemory } from "../lib/customer-memory.js";
 import { asyncRoute } from "../middleware/error-handler.js";
-import type { AiConversationRow, AiMessageRow, RequestRow } from "../types/database.types.js";
+import type { AiConversationRow, AiMessageRow } from "../types/database.types.js";
 
 const router = Router();
-
-function isStaff(role: string): boolean {
-  return role === "admin" || role === "agent";
-}
-
-/** Backs the account_status_lookup tool (lib/agent-tools.ts) — always the
- * caller's own account, resolved server-side from req.user, never
- * client-supplied. */
-async function loadAccountInput(userId: string, role: string): Promise<AiAccountInput> {
-  const profile = await prisma.profiles.findUnique({ where: { id: userId } });
-
-  let customerProfile: { organization_name: string | null; city: string | null; country: string | null } | null = null;
-  if (role === "customer") {
-    customerProfile = await prisma.customer_profiles.findUnique({ where: { user_id: userId } });
-  }
-
-  return {
-    role,
-    status: profile?.status ?? "active",
-    organizationName: customerProfile?.organization_name ?? null,
-    city: customerProfile?.city ?? null,
-    country: customerProfile?.country ?? "Uganda",
-    memberSince: profile ? formatMemberSince(profile.created_at as unknown as string) : "unknown",
-  };
-}
-
-async function loadCustomerMemory(userId: string, role: string): Promise<AiMemoryInput[]> {
-  if (role !== "customer") return [];
-
-  const preferences = await prisma.customer_profiles.findUnique({
-    where: { user_id: userId },
-    select: { memory_enabled: true },
-  });
-  if (!preferences?.memory_enabled) return [];
-
-  const facts = await prisma.customer_memory.findMany({
-    where: { customer_id: userId, is_enabled: true },
-    select: { memory_key: true, memory_value: true },
-    orderBy: { updated_at: "desc" },
-  });
-
-  return facts.map(({ memory_key, memory_value }) => ({ key: memory_key, value: memory_value }));
-}
 
 /**
  * customer_id is "the owning user" for both callers of this table today:
@@ -137,36 +87,19 @@ router.post(
       data: { conversation_id: req.params.id, sender_type: "customer", content },
     })) as unknown as AiMessageRow;
 
-    const statuses = await loadStatuses();
-    const statusNameById = new Map(statuses.map((s) => [s.id, s.name]));
-    const finalIds = await finalStatusIds();
-
-    const [docs, requests, account, customerMemory] = await Promise.all([
-      loadPublishedPassages().then((passages) => attachSemanticScores(content, passages)),
-      (isStaff(user.role)
-        ? prisma.requests.findMany({
-            where: finalIds.length > 0 ? { status_id: { notIn: finalIds } } : undefined,
-          })
-        : prisma.requests.findMany({ where: { customer_id: user.id } })) as unknown as Promise<RequestRow[]>,
-      loadAccountInput(user.id, user.role),
+    const [knowledgeInputs, requestInputs, account, customerMemory] = await Promise.all([
+      loadCallerKnowledge(content),
+      loadCallerRequests(user),
+      loadCallerAccount(user),
       loadCustomerMemory(user.id, user.role),
     ]);
-
-    // Page-level passages, not whole documents: the agent retrieves the
-    // relevant bit and answers from it (see lib/knowledge-index.ts).
-    const knowledgeInputs: AiKnowledgeInput[] = docs;
-    const requestInputs: AiRequestInput[] = requests.map((r) => ({
-      id: r.id,
-      title: r.title,
-      status: r.status_id ? statusNameById.get(r.status_id) ?? "unknown" : "unknown",
-    }));
 
     const answer = await generateAssistantReply(
       content,
       knowledgeInputs,
       requestInputs,
       account,
-      isStaff(user.role),
+      isStaffRole(user.role),
       customerMemory,
     );
 
