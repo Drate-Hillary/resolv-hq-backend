@@ -3,6 +3,7 @@ import { Router } from "express";
 import { requireRole } from "../../lib/auth.js";
 import { badRequest, HttpError, notFound } from "../../lib/errors.js";
 import { validateKeyAndValue } from "../../lib/memory-input.js";
+import { loadRetentionPolicy, purgeExpired } from "../../lib/retention.js";
 import { mapMemoryRow } from "../../lib/mappers.js";
 import { isUniqueViolation } from "../../lib/prisma-errors.js";
 import { prisma } from "../../lib/prisma.js";
@@ -81,6 +82,44 @@ router.get(
         recordCount: group._count._all,
       })),
     });
+  }),
+);
+
+/**
+ * Read access to the customer-memory audit trail. Admin only (not agents):
+ * the log records which staff member looked at which customer.
+ */
+router.get(
+  "/audit",
+  asyncRoute(async (req: Request, res: Response) => {
+    if (req.user!.role !== "admin") throw new HttpError(403, "Requires admin role");
+    const customerId = typeof req.query.customerId === "string" ? req.query.customerId : undefined;
+    if (customerId !== undefined && !UUID_PATTERN.test(customerId)) throw badRequest("customerId must be a valid id");
+    const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 200);
+    const rows = await prisma.customer_memory_access_logs.findMany({
+      where: customerId ? { customer_id: customerId } : {},
+      orderBy: { created_at: "desc" },
+      take: limit,
+    });
+    res.json(
+      rows.map((row) => ({
+        id: row.id,
+        actorId: row.actor_id,
+        customerId: row.customer_id,
+        memoryRecordId: row.memory_record_id,
+        action: row.action,
+        createdAt: row.created_at,
+      })),
+    );
+  }),
+);
+
+/** Admin-only dry run of the retention purge: shows what would be deleted without deleting. */
+router.get(
+  "/retention",
+  asyncRoute(async (req: Request, res: Response) => {
+    if (req.user!.role !== "admin") throw new HttpError(403, "Requires admin role");
+    res.json({ policy: loadRetentionPolicy(), enabled: process.env.RETENTION_ENABLED === "true", wouldDelete: await purgeExpired({ dryRun: true }) });
   }),
 );
 
@@ -327,6 +366,7 @@ router.patch(
       update.memory_value = validated.value;
     }
     if (enabled !== undefined) update.is_enabled = enabled;
+    (update as { updated_at?: Date }).updated_at = new Date();
 
     try {
       const record = await prisma.$transaction(async (tx) => {

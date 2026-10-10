@@ -11,6 +11,7 @@
     "mcp:stdio": "node dist/mcp-stdio.js",
     "mcp:stdio:dev": "tsx src/mcp-stdio.ts",
     "test": "tsx --test tests/*.test.ts",
+    "test:db": "tsx --test tests/memory.db.integration.ts",
     "lint": "eslint .",
     "postinstall": "prisma generate",
     "migrate:dev": "prisma migrate dev",

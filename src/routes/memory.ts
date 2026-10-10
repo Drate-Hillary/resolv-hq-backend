@@ -25,6 +25,20 @@ router.get(
   }),
 );
 
+/** Portability: everything stored about the caller in this table, as a JSON download. */
+router.get(
+  "/export",
+  requireRole("customer"),
+  asyncRoute(async (req: Request, res: Response) => {
+    const data = (await prisma.customer_memory.findMany({
+      where: { customer_id: req.user!.id },
+      orderBy: { created_at: "asc" },
+    })) as unknown as CustomerMemoryRow[];
+    res.setHeader("Content-Disposition", 'attachment; filename="saved-information.json"');
+    res.json({ exportedAt: new Date().toISOString(), facts: data.map(mapMemoryRow) });
+  }),
+);
+
 router.post(
   "/",
   requireRole("customer"),
@@ -89,6 +103,7 @@ router.patch(
     const data = (await prisma.customer_memory.update({
       where: { id: req.params.id },
       data: {
+        updated_at: new Date(),
         ...(value !== undefined ? { memory_value: value.trim() } : {}),
         ...(enabled !== undefined ? { is_enabled: enabled } : {}),
       },
