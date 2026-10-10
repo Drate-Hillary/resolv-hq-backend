@@ -13,6 +13,7 @@ import { loadCustomerMemory } from "../src/lib/customer-memory.js";
 import { prisma } from "../src/lib/prisma.js";
 import { purgeExpired } from "../src/lib/retention.js";
 import { errorHandler } from "../src/middleware/error-handler.js";
+import mcpRouter from "../src/routes/mcp.js";
 import memoryRouter from "../src/routes/memory.js";
 
 const KEY = "zz_selftest_do_not_use";
@@ -40,6 +41,7 @@ before(async () => {
     next();
   });
   app.use("/memory-facts", memoryRouter);
+  app.use("/mcp", mcpRouter);
   app.use(errorHandler);
   server = app.listen(0);
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -86,4 +88,30 @@ test("real database: retention dry run runs and deletes nothing", async () => {
   const result = await purgeExpired({ dryRun: true });
   assert.equal(result.dryRun, true);
   assert.deepEqual(await counts(), beforeCounts);
+});
+
+// The same JSON-RPC requests the console MCP tester sends: no initialize, JSON response.
+const rpc = (method: string, params?: unknown) =>
+  fetch(base + "/mcp", {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, ...(params === undefined ? {} : { params }) }),
+  }).then(async (res) => ({ status: res.status, body: (await res.json()) as Record<string, any> })); // eslint-disable-line @typescript-eslint/no-explicit-any
+
+test("real database: /mcp over HTTP lists tools and runs read-only calls without initialize", async () => {
+  const list = await rpc("tools/list");
+  assert.equal(list.status, 200);
+  const names = (list.body.result.tools as { name: string }[]).map((t) => t.name).sort();
+  assert.deepEqual(names, ["account_status_lookup", "draft_escalation_ticket", "outage_status_checker", "search_knowledge_base"]);
+
+  const account = await rpc("tools/call", { name: "account_status_lookup", arguments: {} });
+  assert.equal(account.status, 200);
+  assert.notEqual(account.body.result.isError, true);
+  assert.equal(account.body.result.structuredContent.role, "customer");
+
+  const extra = await rpc("tools/call", { name: "account_status_lookup", arguments: { userId: "x" } });
+  assert.ok(extra.body.error || extra.body.result?.isError, "unexpected argument should be rejected");
+
+  const unknown = await rpc("tools/call", { name: "delete_everything", arguments: {} });
+  assert.ok(unknown.body.error || unknown.body.result?.isError, "unknown tool should be rejected");
 });
