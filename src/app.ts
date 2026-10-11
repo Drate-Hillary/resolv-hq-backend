@@ -10,6 +10,7 @@ import notificationsRouter from "./routes/notifications.js";
 import eventsRouter from "./routes/events.js";
 import categoriesRouter from "./routes/categories.js";
 import helpArticlesRouter from "./routes/help-articles.js";
+import appContentRouter from "./routes/app-content.js";
 import memoryRouter from "./routes/memory.js";
 import chatRouter from "./routes/chat.js";
 import aiRouter from "./routes/ai.js";
@@ -40,6 +41,9 @@ export function createApp() {
   app.use(express.json());
 
   app.get("/health", (_req, res) => res.json({ ok: true }));
+
+  // Public: the onboarding copy is shown before sign-in.
+  app.use("/app-content", appContentRouter);
 
   // Every route below requires a verified Supabase session.
   app.use(requireAuth);

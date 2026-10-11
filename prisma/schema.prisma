@@ -695,6 +695,17 @@ model boundary_rules {
   @@schema("public")
 }
 
+/// Customer-app copy (onboarding, privacy, support contact, assistant greeting,
+/// status explanations) served by GET /app-content. Added by the
+/// 20261010000000_app_content migration.
+model app_content {
+  key        String   @id
+  value      Json
+  updated_at DateTime @default(now()) @db.Timestamptz(6)
+
+  @@schema("public")
+}
+
 /// Backs lib/clarification.ts's Clarification Prompting Logic. Added by the
 /// Prisma migration since it didn't exist in the database yet — only
 /// referenced from hand-written app types before this.
