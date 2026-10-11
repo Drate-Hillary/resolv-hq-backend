@@ -87,6 +87,7 @@ export interface MemoryFact {
   id: string;
   key: string;
   value: string;
+  enabled: boolean;
 }
 
 export interface UserProfile {
@@ -101,6 +102,7 @@ export interface UserProfile {
   city: string;
   country: string;
   preferredLanguage: string;
+  memoryEnabled: boolean;
 }
 
 /** Neutral chat shapes shared by the customer app and the admin console's demo chat. */

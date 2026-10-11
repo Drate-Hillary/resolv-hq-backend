@@ -1,4 +1,6 @@
 import { Router, type Request, type Response } from "express";
+import { notFound } from "../lib/errors.js";
+import { getKnowledgeFileSignedUrl } from "../lib/knowledge-storage.js";
 import { mapKnowledgeDocumentToHelpArticle } from "../lib/mappers.js";
 import { prisma } from "../lib/prisma.js";
 import { asyncRoute } from "../middleware/error-handler.js";
@@ -36,6 +38,30 @@ router.get(
         mapKnowledgeDocumentToHelpArticle(row, row.category_id ? categoryNameById.get(row.category_id) ?? null : null),
       ),
     );
+  }),
+);
+
+/**
+ * Short-lived signed URL for the file behind a published article (e.g. a PDF
+ * guide), so the app can open it. Draft/archived documents are not exposed.
+ */
+router.get(
+  "/:id/file",
+  asyncRoute(async (req: Request, res: Response) => {
+    const id = String(req.params.id);
+    const doc = await prisma.knowledge_documents.findFirst({
+      where: { id, status: "published" },
+      select: { title: true, file_url: true, file_type: true },
+    });
+    if (!doc?.file_url) throw notFound("This article has no attached file");
+
+    const url = await getKnowledgeFileSignedUrl(doc.file_url);
+    const ext = doc.file_url.includes(".") ? doc.file_url.split(".").pop() : null;
+    res.json({
+      url,
+      fileName: ext && !doc.title.toLowerCase().endsWith(`.${ext.toLowerCase()}`) ? `${doc.title}.${ext}` : doc.title,
+      fileType: doc.file_type,
+    });
   }),
 );
 

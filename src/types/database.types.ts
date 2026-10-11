@@ -59,6 +59,7 @@ export interface Database {
           city: string | null;
           country: string;
           preferred_language: string;
+          memory_enabled: boolean;
         };
         Insert: {
           user_id: string;
@@ -66,6 +67,7 @@ export interface Database {
           city?: string | null;
           country?: string;
           preferred_language?: string;
+          memory_enabled?: boolean;
         };
         Update: Partial<Database["public"]["Tables"]["customer_profiles"]["Insert"]>;
         Relationships: [];
@@ -309,6 +311,7 @@ export interface Database {
           customer_id: string;
           memory_key: string;
           memory_value: string;
+          is_enabled: boolean;
           created_at: string;
           updated_at: string;
         };
@@ -317,6 +320,7 @@ export interface Database {
           customer_id: string;
           memory_key: string;
           memory_value: string;
+          is_enabled?: boolean;
           created_at?: string;
           updated_at?: string;
         };

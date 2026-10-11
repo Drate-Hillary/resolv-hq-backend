@@ -39,19 +39,14 @@ services:
 
   admin-app:
     build:
-      context: ../resolv-hq
+      context: ../resolv-hq-react
       dockerfile: Dockerfile
       args:
-        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
-        NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY}
+        VITE_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+        VITE_SUPABASE_PUBLISHABLE_KEY: ${NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY}
         # Baked into the browser bundle — must be host-reachable (default:
         # the admin-nginx port below), not the Docker-network address.
-        NEXT_PUBLIC_API_BASE_URL: ${ADMIN_PUBLIC_API_BASE_URL:-http://localhost:4000}
-    environment:
-      # Server-only (never inlined client-side, see src/backend/api/server.ts) —
-      # the Next.js server inside this container reaches the backend by its
-      # Compose service name, not by the host-facing URL above.
-      API_BASE_URL: http://backend:4000
+        VITE_API_BASE_URL: ${ADMIN_PUBLIC_API_BASE_URL:-http://localhost:4000}
     depends_on:
       - backend
     expose:

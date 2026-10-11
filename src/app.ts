@@ -10,12 +10,15 @@ import notificationsRouter from "./routes/notifications.js";
 import eventsRouter from "./routes/events.js";
 import categoriesRouter from "./routes/categories.js";
 import helpArticlesRouter from "./routes/help-articles.js";
+import appContentRouter from "./routes/app-content.js";
 import memoryRouter from "./routes/memory.js";
 import chatRouter from "./routes/chat.js";
 import aiRouter from "./routes/ai.js";
+import mcpRouter from "./routes/mcp.js";
 
 import knowledgeRouter from "./routes/knowledge.js";
 import adminDashboardRouter from "./routes/admin/dashboard.js";
+import adminMemoryRouter from "./routes/admin/memory.js";
 import adminKnowledgeRouter from "./routes/admin/knowledge.js";
 import adminKnowledgeCategoriesRouter from "./routes/admin/knowledge-categories.js";
 import adminToolsRouter from "./routes/admin/tools.js";
@@ -39,6 +42,9 @@ export function createApp() {
 
   app.get("/health", (_req, res) => res.json({ ok: true }));
 
+  // Public: the onboarding copy is shown before sign-in.
+  app.use("/app-content", appContentRouter);
+
   // Every route below requires a verified Supabase session.
   app.use(requireAuth);
 
@@ -58,8 +64,10 @@ export function createApp() {
   app.use("/chat", rateLimit({ keyPrefix: "chat", max: 20, windowMs: 60 * 1000 }), chatRouter);
   app.use("/ai", aiRouter);
   app.use("/knowledge", knowledgeRouter);
+  app.use("/mcp", rateLimit({ keyPrefix: "mcp", max: 60, windowMs: 60 * 1000 }), mcpRouter);
 
   app.use("/admin/dashboard", adminDashboardRouter);
+  app.use("/admin/memory", adminMemoryRouter);
   app.use("/admin/knowledge", adminKnowledgeRouter);
   app.use("/admin/knowledge-categories", adminKnowledgeCategoriesRouter);
   app.use("/admin/tools", adminToolsRouter);

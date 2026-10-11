@@ -150,6 +150,7 @@ export function mapMemoryRow(row: CustomerMemoryRow): MemoryFact {
     id: row.id,
     key: row.memory_key,
     value: row.memory_value,
+    enabled: row.is_enabled,
   };
 }
 

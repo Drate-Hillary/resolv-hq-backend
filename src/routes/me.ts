@@ -42,6 +42,7 @@ router.get(
       city: customerProfile?.city ?? "",
       country: customerProfile?.country ?? "Uganda",
       preferredLanguage: customerProfile?.preferred_language ?? "English",
+      memoryEnabled: profile.role === "customer" ? customerProfile?.memory_enabled ?? true : false,
     };
     res.json(body);
   }),
@@ -88,11 +89,12 @@ router.patch(
   requireRole("customer"),
   asyncRoute(async (req: Request, res: Response) => {
     const userId = req.user!.id;
-    const { organizationName, city, country, preferredLanguage } = req.body as Partial<{
+    const { organizationName, city, country, preferredLanguage, memoryEnabled } = req.body as Partial<{
       organizationName: string;
       city: string;
       country: string;
       preferredLanguage: string;
+      memoryEnabled: boolean;
     }>;
 
     const patch: Prisma.customer_profilesUpdateInput = {};
@@ -100,6 +102,10 @@ router.patch(
     if (city !== undefined) patch.city = city;
     if (country !== undefined) patch.country = country;
     if (preferredLanguage !== undefined) patch.preferred_language = preferredLanguage;
+    if (memoryEnabled !== undefined) {
+      if (typeof memoryEnabled !== "boolean") throw badRequest("memoryEnabled must be a boolean");
+      patch.memory_enabled = memoryEnabled;
+    }
     if (Object.keys(patch).length === 0) throw badRequest("No preference fields provided");
 
     let data: CustomerProfile;
@@ -118,6 +124,7 @@ router.patch(
       city: data.city ?? "",
       country: data.country,
       preferredLanguage: data.preferred_language,
+      memoryEnabled: data.memory_enabled,
     });
   }),
 );
