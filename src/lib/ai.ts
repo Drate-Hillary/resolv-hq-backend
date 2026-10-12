@@ -13,7 +13,7 @@ import { detectBoundaryViolation } from "./ai-boundary.js";
 import { checkForClarification } from "./clarification.js";
 import { packIntoBudget } from "./context-budget.js";
 import { buildSystemPrompt } from "./prompts/system-prompt.js";
-import { runReActLoop, type ReActStep } from "./react-agent.js";
+import { runReActLoop, type ReActStep, type TraceEvent } from "./react-agent.js";
 import { isRelevant, queryTerms, scoreText } from "./text-match.js";
 import { stagesFromTrace, type AgentFlowRecord } from "./llm/flow-log.js";
 import { GatewayUnavailableError, type ProviderHandoff } from "./llm/gateway.js";
@@ -62,6 +62,12 @@ export interface AiAnswer {
   /** Structured Plan/Act/Observe trace of the ReAct loop — `steps` above is
    * the same information flattened to display strings. */
   trace?: ReActStep[];
+  /** Timed model/tool calls for the persistent trace log (agent_trace_logs). */
+  traceEvents?: TraceEvent[];
+  /** What retrieval handed the model (ids, titles, scores) — recorded in the trace log. */
+  retrieval?: { id: string; title: string; score?: number }[];
+  /** Why the boundary guard replaced the model's draft, when it did. */
+  boundaryViolation?: { category: string; matchedText: string };
   /** Set when the model call failed and this answer came from the keyword
    * fallback instead — why it did, so the console can say so. */
   fallbackReason?: string;
@@ -312,6 +318,9 @@ export async function generateAssistantReply(
         violation ? "Blocked a boundary-matrix violation" : undefined,
       ].filter((s): s is string => Boolean(s)),
       trace: result.trace,
+      traceEvents: result.traceEvents,
+      retrieval: toSources(ranked).map(({ id, title, score }) => ({ id, title, score })),
+      boundaryViolation: violation ? { category: violation.category, matchedText: violation.matchedText } : undefined,
       escalationDraft: result.escalationDraft,
       model: violation ? undefined : result.model,
       flow: {
@@ -339,6 +348,7 @@ export async function generateAssistantReply(
         ...(handoffs.length > 0 ? ["No model provider could continue; handing the task to knowledge-base search"] : []),
       ],
       fallbackReason: reason,
+      traceEvents: (gatewayError?.traceEvents ?? []) as TraceEvent[],
       flow: {
         kind: "fallback",
         provider: null,
