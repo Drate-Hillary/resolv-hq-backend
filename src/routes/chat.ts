@@ -10,6 +10,7 @@ import { assertConversationAccess } from "../lib/ownership.js";
 import { SYSTEM_PROMPT_VERSION } from "../lib/prompts/system-prompt.js";
 import { prisma } from "../lib/prisma.js";
 import { loadCustomerMemory } from "../lib/customer-memory.js";
+import { writeTraceLog } from "../lib/trace-log.js";
 import { asyncRoute } from "../middleware/error-handler.js";
 import type { AiConversationRow, AiMessageRow } from "../types/database.types.js";
 
@@ -94,6 +95,7 @@ router.post(
       loadCustomerMemory(user.id, user.role),
     ]);
 
+    const replyStart = Date.now();
     const answer = await generateAssistantReply(
       content,
       knowledgeInputs,
@@ -145,6 +147,10 @@ router.post(
         if (escalated) throw err;
         console.error("Failed to record agent run:", err);
       }
+    }
+
+    if (run) {
+      await writeTraceLog(run.id, answer, { query: content, promptVersion: SYSTEM_PROMPT_VERSION, totalLatencyMs: Date.now() - replyStart });
     }
 
     if (answer.escalationDraft && run) {

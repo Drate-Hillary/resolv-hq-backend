@@ -631,7 +631,32 @@ model agent_runs {
   profiles         profiles?          @relation(fields: [customer_id], references: [id], onUpdate: NoAction)
   requests         requests?          @relation(fields: [request_id], references: [id], onUpdate: NoAction)
   guardrail_events guardrail_events[]
+  agent_trace_logs agent_trace_logs[]
 
+  @@schema("public")
+}
+
+/// Ordered step-level trace of a run (retrieval, model/tool calls, guardrail, outcome) with latency and error.
+model agent_trace_logs {
+  id             String     @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  agent_run_id   String     @db.Uuid
+  seq            Int
+  kind           String
+  iteration      Int?
+  provider       String?
+  model          String?
+  prompt_version String?
+  tool_name      String?
+  tool_input     Json?
+  detail         String?
+  latency_ms     Int?
+  error          String?
+  outcome        String?
+  created_at     DateTime   @default(now()) @db.Timestamptz(6)
+  agent_runs     agent_runs @relation(fields: [agent_run_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([agent_run_id, seq])
+  @@index([agent_run_id, seq])
   @@schema("public")
 }
 

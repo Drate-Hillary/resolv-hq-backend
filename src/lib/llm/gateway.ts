@@ -33,6 +33,8 @@ export class GatewayUnavailableError extends Error {
     readonly attempts: string[] = [],
     readonly failedProviderIds: string[] = [],
     readonly handoffs: ProviderHandoff[] = [],
+    /** Trace events the ReAct loop recorded before the gateway gave up (set by lib/react-agent.ts). */
+    readonly traceEvents: unknown[] = [],
   ) {
     super(message);
     this.name = "GatewayUnavailableError";
