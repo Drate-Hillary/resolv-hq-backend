@@ -36,11 +36,18 @@ export type LlmMessage =
   | { role: "assistant"; content: string | null; toolCalls?: LlmToolCall[] }
   | { role: "tool"; toolCallId: string; content: string };
 
+export interface LlmUsage {
+  inputTokens: number;
+  outputTokens: number;
+}
+
 export interface LlmCompletionResult {
   /** Null when the model chose to call tools instead of answering. */
   content: string | null;
   model: string;
   toolCalls?: LlmToolCall[];
+  /** Token counts the provider reported for this call; unset if it did not report any. */
+  usage?: LlmUsage;
 }
 
 export interface LlmClient {

@@ -45,6 +45,8 @@ export interface TraceEvent {
   /** The model's decision for a model_call, the (truncated) observation for a tool_call. */
   detail: string;
   latencyMs: number;
+  inputTokens?: number;
+  outputTokens?: number;
   error?: string;
 }
 
@@ -130,6 +132,8 @@ export async function runReActLoop(
       iteration,
       provider: result.providerName,
       model: result.model,
+      inputTokens: result.usage?.inputTokens,
+      outputTokens: result.usage?.outputTokens,
       detail: result.toolCalls?.length
         ? `Requested tools: ${result.toolCalls.map((c) => c.name).join(", ")}`
         : truncateAtBoundary(result.content ?? "", TRACE_DETAIL_CHARS),
