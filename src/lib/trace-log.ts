@@ -19,6 +19,8 @@ export interface TraceLogRow {
   tool_input: Prisma.InputJsonValue | null;
   detail: string | null;
   latency_ms: number | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
   error: string | null;
   outcome: string | null;
 }
@@ -33,7 +35,7 @@ export function buildTraceRows(
   const rows: Omit<TraceLogRow, "seq">[] = [];
   const blank = {
     iteration: null, provider: null, model: null, prompt_version: null, tool_name: null,
-    tool_input: null, detail: null, latency_ms: null, error: null, outcome: null,
+    tool_input: null, detail: null, latency_ms: null, input_tokens: null, output_tokens: null, error: null, outcome: null,
   };
 
   rows.push({
@@ -56,6 +58,8 @@ export function buildTraceRows(
       tool_input: (e.toolInput as Prisma.InputJsonValue | undefined) ?? null,
       detail: e.detail,
       latency_ms: e.latencyMs,
+      input_tokens: e.inputTokens ?? null,
+      output_tokens: e.outputTokens ?? null,
       error: e.error ?? null,
     });
   }
@@ -81,14 +85,15 @@ export function buildTraceRows(
   return rows.map((r, i) => ({ ...r, seq: i + 1 }));
 }
 
-/** Best-effort: a trace write must never cost the customer their answer. */
+/** Best-effort: a trace write must never cost the customer their answer.
+ * Returns the rows either way so the response can still carry the timeline. */
 export async function writeTraceLog(
   runId: string,
   answer: Parameters<typeof buildTraceRows>[0],
   meta: Parameters<typeof buildTraceRows>[1],
-): Promise<void> {
+): Promise<TraceLogRow[]> {
+  const rows = buildTraceRows(answer, meta);
   try {
-    const rows = buildTraceRows(answer, meta);
     await prisma.agent_trace_logs.createMany({
       data: rows.map((r) => ({
         ...r,
@@ -99,4 +104,5 @@ export async function writeTraceLog(
   } catch (err) {
     console.error("Failed to write agent trace log:", err);
   }
+  return rows;
 }

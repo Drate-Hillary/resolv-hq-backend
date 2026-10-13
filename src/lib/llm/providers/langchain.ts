@@ -90,15 +90,17 @@ export class LangChainClient implements LlmClient {
       arguments: call.args ?? {},
     }));
 
+    const meta = (response as unknown as { usage_metadata?: { input_tokens?: number; output_tokens?: number } }).usage_metadata;
+    const usage = meta ? { inputTokens: meta.input_tokens ?? 0, outputTokens: meta.output_tokens ?? 0 } : undefined;
     const text = extractTextContent(response.content);
     if (toolCalls.length > 0) {
-      return { content: text || null, model: this.model, toolCalls };
+      return { content: text || null, model: this.model, toolCalls, usage };
     }
 
     if (!text) {
       throw new Error("LangChain returned no content");
     }
 
-    return { content: text, model: this.model };
+    return { content: text, model: this.model, usage };
   }
 }

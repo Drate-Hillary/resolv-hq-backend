@@ -17,6 +17,7 @@ interface GeminiContent {
 interface GeminiResponse {
   candidates?: { content?: { parts?: GeminiPart[] }; finishReason?: string }[];
   promptFeedback?: { blockReason?: string };
+  usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; thoughtsTokenCount?: number };
 }
 
 /** Gemini has no "tool" role or call ids: a tool result is a `functionResponse`
@@ -119,6 +120,13 @@ export class GoogleClient implements LlmClient {
 
     const data = (await res.json()) as GeminiResponse;
     if (data.promptFeedback?.blockReason) throw new Error(`Google blocked the prompt: ${data.promptFeedback.blockReason}`);
+    // Gemini bills its internal "thinking" tokens as output.
+    const usage = data.usageMetadata
+      ? {
+          inputTokens: data.usageMetadata.promptTokenCount ?? 0,
+          outputTokens: (data.usageMetadata.candidatesTokenCount ?? 0) + (data.usageMetadata.thoughtsTokenCount ?? 0),
+        }
+      : undefined;
     const parts = data.candidates?.[0]?.content?.parts ?? [];
 
     const calls = parts.filter((p): p is Extract<GeminiPart, { functionCall: unknown }> => "functionCall" in p);
@@ -134,11 +142,11 @@ export class GoogleClient implements LlmClient {
         };
       });
       const text = parts.filter((p): p is { text: string } => "text" in p).map((p) => p.text).join("").trim();
-      return { content: text || null, model: this.model, toolCalls };
+      return { content: text || null, model: this.model, toolCalls, usage };
     }
 
     const text = parts.filter((p): p is { text: string } => "text" in p).map((p) => p.text).join("").trim();
     if (!text) throw new Error(`Google returned no text content (finishReason: ${data.candidates?.[0]?.finishReason ?? "none"})`);
-    return { content: text, model: this.model };
+    return { content: text, model: this.model, usage };
   }
 }

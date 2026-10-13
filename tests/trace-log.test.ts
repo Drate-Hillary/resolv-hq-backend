@@ -49,3 +49,15 @@ test("a boundary block adds a guardrail row before the outcome", () => {
   );
   assert.deepEqual(rows.map((r) => r.kind), ["retrieval", "guardrail", "outcome"]);
 });
+
+test("token usage from a model call is carried onto its trace row", () => {
+  const rows = buildTraceRows(
+    {
+      traceEvents: [{ kind: "model_call", iteration: 1, provider: "p", model: "m", detail: "ok", latencyMs: 5, inputTokens: 1200, outputTokens: 80 }],
+      flow: { kind: "model", provider: "p", model: "m", attempts: ["p"], cached: false, stages: [], outcome: "answered" },
+    },
+    meta,
+  );
+  assert.equal(rows[1].input_tokens, 1200);
+  assert.equal(rows[1].output_tokens, 80);
+});

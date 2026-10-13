@@ -149,8 +149,9 @@ router.post(
       }
     }
 
+    let timeline: Awaited<ReturnType<typeof writeTraceLog>> = [];
     if (run) {
-      await writeTraceLog(run.id, answer, { query: content, promptVersion: SYSTEM_PROMPT_VERSION, totalLatencyMs: Date.now() - replyStart });
+      timeline = await writeTraceLog(run.id, answer, { query: content, promptVersion: SYSTEM_PROMPT_VERSION, totalLatencyMs: Date.now() - replyStart });
     }
 
     if (answer.escalationDraft && run) {
@@ -180,6 +181,12 @@ router.post(
       steps: answer.steps,
       sources: answer.sources,
       trace: answer.trace ?? [],
+      timeline,
+      handoffs: answer.steps.filter((s) => s.startsWith("Handoff:")),
+      tokens: {
+        input: timeline.reduce((n, r) => n + (r.input_tokens ?? 0), 0),
+        output: timeline.reduce((n, r) => n + (r.output_tokens ?? 0), 0),
+      },
       fallbackReason: answer.fallbackReason ?? null,
       knowledgeCount: new Set(knowledgeInputs.map((k) => k.id)).size,
       openRequestCount: requestInputs.length,

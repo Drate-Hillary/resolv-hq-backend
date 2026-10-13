@@ -650,6 +650,8 @@ model agent_trace_logs {
   tool_input     Json?
   detail         String?
   latency_ms     Int?
+  input_tokens   Int?
+  output_tokens  Int?
   error          String?
   outcome        String?
   created_at     DateTime   @default(now()) @db.Timestamptz(6)

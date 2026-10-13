@@ -3,7 +3,6 @@ import type { Request, Response } from "express";
 import { Router } from "express";
 import { requireRole } from "../../lib/auth.js";
 import { badRequest, notFound } from "../../lib/errors.js";
-import { buildSankey, type AgentFlowRecord } from "../../lib/llm/flow-log.js";
 import { buildClient } from "../../lib/llm/gateway.js";
 import { evaluateClient } from "../../lib/llm/evaluate.js";
 import { isNotFound } from "../../lib/prisma-errors.js";
@@ -31,26 +30,6 @@ router.get(
       orderBy: { created_at: "desc" },
     })) as unknown as AgentProviderRow[];
     res.json(data.map(toPublic));
-  }),
-);
-
-/** Declared before any "/:id" route so "flow" isn't read as an id. */
-router.get(
-  "/flow",
-  asyncRoute(async (_req: Request, res: Response) => {
-    const [registered, runs] = await Promise.all([
-      prisma.agent_providers.findMany({ select: { name: true }, orderBy: { created_at: "asc" } }),
-      prisma.agent_runs.findMany({
-        where: { tool_input: { not: Prisma.DbNull } },
-        orderBy: { started_at: "desc" },
-        take: 300,
-        select: { tool_input: true },
-      }),
-    ]);
-    const flows = runs
-      .map((r) => r.tool_input as unknown as AgentFlowRecord | null)
-      .filter((f): f is AgentFlowRecord => !!f && (f.kind === "model" || f.kind === "fallback"));
-    res.json(buildSankey(flows, registered.map((p) => p.name)));
   }),
 );
 

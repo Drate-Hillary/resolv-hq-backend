@@ -19,7 +19,7 @@ import { GoogleClient } from "./providers/google.js";
 import { LangChainClient } from "./providers/langchain.js";
 import { OpenAiClient } from "./providers/openai.js";
 import { withRetry } from "./retry.js";
-import type { LlmClient, LlmMessage, LlmToolCall, LlmToolDefinition } from "./types.js";
+import type { LlmClient, LlmMessage, LlmToolCall, LlmToolDefinition, LlmUsage } from "./types.js";
 
 export interface ProviderHandoff {
   from: string;
@@ -47,6 +47,8 @@ export interface GatewayResult {
   providerName: string;
   providerId?: string;
   toolCalls?: LlmToolCall[];
+  /** Tokens the provider reported for this call; unset on a cache hit. */
+  usage?: LlmUsage;
   cached?: boolean;
   /** Providers tried for this call, in order; the last one answered. */
   attempts?: string[];
@@ -86,6 +88,13 @@ export function buildClient(row: { provider: string; model: string | null; api_k
   }
 }
 
+let clientBuilder: typeof buildClient = buildClient;
+
+/** Test seam only: lets the end-to-end test script the model instead of calling a real provider. Pass null to restore. */
+export function setClientBuilderForTests(fn: typeof buildClient | null): void {
+  clientBuilder = fn ?? buildClient;
+}
+
 /**
  * Tries every active agent_providers row, oldest-registered first, until
  * one succeeds (each attempt itself retried with backoff — see retry.ts).
@@ -103,7 +112,7 @@ export async function completeWithFallback(
     const cached = await redis.get(key);
     if (cached) {
       const parsed = JSON.parse(cached) as GatewayResult;
-      return { ...parsed, cached: true, attempts: [], failedProviderIds: [], handoffs: [] };
+      return { ...parsed, usage: undefined, cached: true, attempts: [], failedProviderIds: [], handoffs: [] };
     }
   } catch (err) {
     console.error("LLM cache read failed, continuing without cache:", err);
@@ -128,7 +137,7 @@ export async function completeWithFallback(
   const failedProviderIds: string[] = [];
   const handoffs: ProviderHandoff[] = [];
   for (const [index, row] of providers.entries()) {
-    const client = buildClient(row);
+    const client = clientBuilder(row);
     if (!client) {
       failures.push(`${row.name}: provider "${row.provider}" has no client implementation yet`);
       attempts.push(row.name);
