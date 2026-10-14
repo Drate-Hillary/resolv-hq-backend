@@ -32,6 +32,26 @@ export interface ReActStep {
   detail: string;
 }
 
+/** One row of the end-to-end trace log (agent_trace_logs): a single model call
+ * or tool call, with how long it took and whether it failed. Kept separate
+ * from `trace` above, which is the display-oriented Plan/Act/Observe list. */
+export interface TraceEvent {
+  kind: "model_call" | "tool_call";
+  iteration: number;
+  provider?: string;
+  model?: string;
+  toolName?: string;
+  toolInput?: Record<string, unknown>;
+  /** The model's decision for a model_call, the (truncated) observation for a tool_call. */
+  detail: string;
+  latencyMs: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  error?: string;
+}
+
+const TRACE_DETAIL_CHARS = 500;
+
 export interface ReActResult {
   content: string;
   model: string;
@@ -42,6 +62,7 @@ export interface ReActResult {
   attempts: string[];
   handoffs: ProviderHandoff[];
   trace: ReActStep[];
+  traceEvents: TraceEvent[];
   /** Set when the loop called draft_escalation_ticket — the structured brief
    * for a human to review, kept alongside `content` rather than requiring
    * the caller to re-parse it out of the tool's text observation. */
@@ -68,6 +89,7 @@ export async function runReActLoop(
     { role: "user", content: query },
   ];
   const trace: ReActStep[] = [];
+  const traceEvents: TraceEvent[] = [];
   let attempts: string[] | undefined;
   const handoffs: ProviderHandoff[] = [];
   const excludedProviderIds = new Set<string>();
@@ -77,9 +99,17 @@ export async function runReActLoop(
 
   for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     let result: GatewayResult;
+    const modelStart = Date.now();
     try {
       result = await completeWithFallback(messages, tools, [...excludedProviderIds]);
     } catch (err) {
+      traceEvents.push({
+        kind: "model_call",
+        iteration,
+        detail: "Model call failed",
+        latencyMs: Date.now() - modelStart,
+        error: err instanceof Error ? err.message : String(err),
+      });
       if (err instanceof GatewayUnavailableError) {
         const allHandoffs = new Map(
           [...handoffs, ...err.handoffs].map((handoff) => [
@@ -92,10 +122,23 @@ export async function runReActLoop(
           [...new Set([...(attempts ?? []), ...err.attempts])],
           [...new Set([...excludedProviderIds, ...err.failedProviderIds])],
           [...allHandoffs.values()],
+          traceEvents,
         );
       }
       throw err;
     }
+    traceEvents.push({
+      kind: "model_call",
+      iteration,
+      provider: result.providerName,
+      model: result.model,
+      inputTokens: result.usage?.inputTokens,
+      outputTokens: result.usage?.outputTokens,
+      detail: result.toolCalls?.length
+        ? `Requested tools: ${result.toolCalls.map((c) => c.name).join(", ")}`
+        : truncateAtBoundary(result.content ?? "", TRACE_DETAIL_CHARS),
+      latencyMs: Date.now() - modelStart,
+    });
     attempts ??= result.attempts ?? [];
     for (const providerId of result.failedProviderIds ?? []) excludedProviderIds.add(providerId);
     for (const handoff of result.handoffs ?? []) {
@@ -115,6 +158,14 @@ export async function runReActLoop(
           trace.push({ phase: "act", detail: `${call.name}: rejected — ${call.argumentsParseError}` });
           console.error(`ReAct loop: rejected malformed tool-call arguments for "${call.name}": ${call.argumentsParseError}`);
           trace.push({ phase: "observe", detail: observation });
+          traceEvents.push({
+            kind: "tool_call",
+            iteration,
+            toolName: call.name,
+            detail: observation,
+            latencyMs: 0,
+            error: `invalid arguments: ${call.argumentsParseError}`,
+          });
           messages.push({ role: "tool", toolCallId: call.id, content: observation });
           continue;
         }
@@ -123,12 +174,30 @@ export async function runReActLoop(
           const observation = `Tool "${call.name}" is not available.`;
           trace.push({ phase: "act", detail: `${call.name}: rejected — not an active tool` });
           trace.push({ phase: "observe", detail: observation });
+          traceEvents.push({
+            kind: "tool_call",
+            iteration,
+            toolName: call.name,
+            toolInput: call.arguments,
+            detail: observation,
+            latencyMs: 0,
+            error: "tool not in allow-list",
+          });
           messages.push({ role: "tool", toolCallId: call.id, content: observation });
           continue;
         }
 
         trace.push({ phase: "act", detail: `${call.name}(${JSON.stringify(call.arguments)})` });
+        const toolStart = Date.now();
         const observation = executeAgentTool(call.name, call.arguments, { knowledge, activeRequests, account });
+        traceEvents.push({
+          kind: "tool_call",
+          iteration,
+          toolName: call.name,
+          toolInput: call.arguments,
+          detail: truncateAtBoundary(observation, TRACE_DETAIL_CHARS),
+          latencyMs: Date.now() - toolStart,
+        });
         if (call.name === "draft_escalation_ticket") {
           escalationDraft = buildEscalationDraft(call.arguments) ?? escalationDraft;
         }
@@ -153,6 +222,7 @@ export async function runReActLoop(
       attempts: attempts ?? [],
       handoffs,
       trace,
+      traceEvents,
       escalationDraft,
     };
   }
@@ -167,6 +237,7 @@ export async function runReActLoop(
     attempts: attempts ?? [],
     handoffs,
     trace,
+    traceEvents,
     escalationDraft,
   };
 }

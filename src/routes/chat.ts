@@ -10,6 +10,7 @@ import { assertConversationAccess } from "../lib/ownership.js";
 import { SYSTEM_PROMPT_VERSION } from "../lib/prompts/system-prompt.js";
 import { prisma } from "../lib/prisma.js";
 import { loadCustomerMemory } from "../lib/customer-memory.js";
+import { writeTraceLog } from "../lib/trace-log.js";
 import { asyncRoute } from "../middleware/error-handler.js";
 import type { AiConversationRow, AiMessageRow } from "../types/database.types.js";
 
@@ -94,6 +95,7 @@ router.post(
       loadCustomerMemory(user.id, user.role),
     ]);
 
+    const replyStart = Date.now();
     const answer = await generateAssistantReply(
       content,
       knowledgeInputs,
@@ -147,6 +149,11 @@ router.post(
       }
     }
 
+    let timeline: Awaited<ReturnType<typeof writeTraceLog>> = [];
+    if (run) {
+      timeline = await writeTraceLog(run.id, answer, { query: content, promptVersion: SYSTEM_PROMPT_VERSION, totalLatencyMs: Date.now() - replyStart });
+    }
+
     if (answer.escalationDraft && run) {
       const approval = await prisma.agent_approvals.create({
         data: {
@@ -174,6 +181,12 @@ router.post(
       steps: answer.steps,
       sources: answer.sources,
       trace: answer.trace ?? [],
+      timeline,
+      handoffs: answer.steps.filter((s) => s.startsWith("Handoff:")),
+      tokens: {
+        input: timeline.reduce((n, r) => n + (r.input_tokens ?? 0), 0),
+        output: timeline.reduce((n, r) => n + (r.output_tokens ?? 0), 0),
+      },
       fallbackReason: answer.fallbackReason ?? null,
       knowledgeCount: new Set(knowledgeInputs.map((k) => k.id)).size,
       openRequestCount: requestInputs.length,

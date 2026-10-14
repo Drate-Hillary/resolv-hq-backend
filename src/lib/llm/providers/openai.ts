@@ -50,6 +50,7 @@ export class OpenAiClient implements LlmClient {
       tools: tools && tools.length > 0 ? toOpenAiTools(tools) : undefined,
     });
 
+    const usage = res.usage ? { inputTokens: res.usage.prompt_tokens, outputTokens: res.usage.completion_tokens } : undefined;
     const message = res.choices[0]?.message;
     if (!message) throw new Error("OpenAI returned no message");
 
@@ -60,11 +61,11 @@ export class OpenAiClient implements LlmClient {
           const { arguments: args, parseError } = parseToolArguments(call.function.arguments);
           return { id: call.id, name: call.function.name, arguments: args, argumentsParseError: parseError };
         });
-      return { content: null, model: this.model, toolCalls };
+      return { content: null, model: this.model, toolCalls, usage };
     }
 
     const content = message.content?.trim();
     if (!content) throw new Error("OpenAI returned no content");
-    return { content, model: this.model };
+    return { content, model: this.model, usage };
   }
 }

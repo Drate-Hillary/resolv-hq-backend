@@ -79,6 +79,7 @@ export class AnthropicClient implements LlmClient {
       tools: tools && tools.length > 0 ? toAnthropicTools(tools) : undefined,
     });
 
+    const usage = { inputTokens: res.usage.input_tokens, outputTokens: res.usage.output_tokens };
     const toolUseBlocks = res.content.filter((b): b is Anthropic.Messages.ToolUseBlock => b.type === "tool_use");
     if (toolUseBlocks.length > 0) {
       const toolCalls: LlmToolCall[] = toolUseBlocks.map((b) => {
@@ -86,11 +87,11 @@ export class AnthropicClient implements LlmClient {
         return { id: b.id, name: b.name, arguments: args, argumentsParseError: parseError };
       });
       const textBlock = res.content.find((b) => b.type === "text");
-      return { content: textBlock?.type === "text" ? textBlock.text : null, model: this.model, toolCalls };
+      return { content: textBlock?.type === "text" ? textBlock.text : null, model: this.model, toolCalls, usage };
     }
 
     const block = res.content.find((b) => b.type === "text");
     if (!block || block.type !== "text") throw new Error("Anthropic returned no text content");
-    return { content: block.text.trim(), model: this.model };
+    return { content: block.text.trim(), model: this.model, usage };
   }
 }
