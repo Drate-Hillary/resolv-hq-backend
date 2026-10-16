@@ -3,6 +3,7 @@
 // gate. Both flows ultimately do the exact same thing to the exact same
 // agent_approvals row, so there is exactly one implementation of that
 // update here.
+import { publishEvent } from "./bus.js";
 import { prisma } from "./prisma.js";
 import { isNotFound } from "./prisma-errors.js";
 import { notFound } from "./errors.js";
@@ -41,6 +42,8 @@ export async function decideApproval(
     data: { status: decision === "approved" ? "completed" : "failed", completed_at: new Date() },
     select: { customer_id: true, request_id: true },
   });
+
+  publishEvent("approval.decided", { approvalId: approval.id, runId: approval.agent_run_id, decision });
 
   // Whoever the assistant was talking to hears the outcome.
   await notifyUsers(

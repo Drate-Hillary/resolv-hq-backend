@@ -23,6 +23,7 @@ import adminKnowledgeRouter from "./routes/admin/knowledge.js";
 import adminKnowledgeCategoriesRouter from "./routes/admin/knowledge-categories.js";
 import adminToolsRouter from "./routes/admin/tools.js";
 import adminTracesRouter from "./routes/admin/traces.js";
+import adminSchedulerRouter from "./routes/admin/scheduler.js";
 import adminApprovalsRouter from "./routes/admin/approvals.js";
 import adminAgentProvidersRouter from "./routes/admin/agent-providers.js";
 import adminBoundaryRulesRouter from "./routes/admin/boundary-rules.js";
@@ -72,6 +73,7 @@ export function createApp() {
   app.use("/admin/knowledge-categories", adminKnowledgeCategoriesRouter);
   app.use("/admin/tools", adminToolsRouter);
   app.use("/admin/traces", adminTracesRouter);
+  app.use("/admin/scheduler", adminSchedulerRouter);
   app.use("/admin/approvals", adminApprovalsRouter);
   app.use("/admin/agent-providers", adminAgentProvidersRouter);
   app.use("/admin/boundary-rules", adminBoundaryRulesRouter);
