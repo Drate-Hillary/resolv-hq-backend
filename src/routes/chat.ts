@@ -1,3 +1,4 @@
+import { publishEvent } from "../lib/bus.js";
 import { Prisma } from "@prisma/client";
 import { Router, type Request, type Response } from "express";
 import { formatEscalationDraft, type EscalationDraft } from "../lib/agent-tools.js";
@@ -172,6 +173,11 @@ router.post(
         },
         user.id,
       );
+    }
+
+    if (run) {
+      publishEvent("agent.run.completed", { runId: run.id, conversationId: req.params.id, escalated: Boolean(escalation) });
+      if (escalation) publishEvent("approval.requested", { approvalId: escalation.approvalId, runId: run.id, title: escalation.title });
     }
 
     res.status(201).json({

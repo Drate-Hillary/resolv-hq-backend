@@ -15,6 +15,7 @@ import { redis } from "./redis.js";
 export type RealtimeEvent =
   | { type: "notification"; notification: unknown }
   | { type: "message"; requestId: string; message: unknown }
+  | { type: "scheduler"; topic: string; event: unknown }
   | { type: "typing"; requestId: string; userId: string; senderType: "customer" | "admin" | "agent"; typing: boolean };
 
 /** Who an event is for: specific users and/or every connected staff member. */

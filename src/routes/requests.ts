@@ -11,6 +11,7 @@ import {
 } from "../lib/attachment-storage.js";
 import { buildTimeline, mapAttachmentRow, mapMessageRow, mapRequestRow, priorityToDb, resolveCategoryId } from "../lib/mappers.js";
 import { notifyStaff, notifyUsers } from "../lib/notify.js";
+import { publishEvent } from "../lib/bus.js";
 import { publish } from "../lib/realtime.js";
 import { assertRequestAccess } from "../lib/ownership.js";
 import { isNotFound } from "../lib/prisma-errors.js";
@@ -205,6 +206,14 @@ router.post(
       },
       userId,
     );
+
+    publishEvent("request.created", {
+      requestId: requestRow.id,
+      ticketNumber: String(requestRow.ticket_number),
+      title: requestRow.title,
+      priority,
+      source: "mobile",
+    });
 
     res.status(201).json({
       ...mapRequestRow(requestRow, categoryName, "submitted"),
