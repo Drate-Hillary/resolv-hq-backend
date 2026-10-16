@@ -20,6 +20,9 @@ RUN addgroup --system --gid 1001 nodejs \
 COPY --from=builder /app/package.json ./package.json
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=builder --chown=backend:nodejs /app/dist ./dist
+# Fly's release_command (`npx prisma migrate deploy`) runs from this image and needs the schema and migrations.
+COPY --from=builder /app/prisma ./prisma
+COPY --from=builder /app/prisma.config.ts ./prisma.config.ts
 
 USER backend
 EXPOSE 4000

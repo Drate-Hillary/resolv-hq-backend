@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { createApp } from "./app.js";
 import { warmUpDatabase } from "./lib/prisma.js";
+import { attachWebSocketServer } from "./lib/ws.js";
 import { startBus } from "./lib/bus.js";
 import { startRealtime } from "./lib/realtime.js";
 import { startRetentionJob } from "./lib/retention.js";
@@ -12,6 +13,7 @@ startBus();
 startRetentionJob();
 void warmUpDatabase();
 
-app.listen(port, () => {
+const server = app.listen(port, () => {
   console.log(`resolv-hq-backend listening on :${port}`);
 });
+attachWebSocketServer(server);
