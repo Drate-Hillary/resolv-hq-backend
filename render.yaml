@@ -5,22 +5,6 @@
 # autoDeployTrigger: checksPass deploys only after the GitHub Actions checks
 # (docker-image.yml: build + tests) pass on that branch.
 
-envVarGroups:
-  - name: resolv-hq-backend-shared
-    envVars:
-      - key: NODE_ENV
-        value: production
-      - key: PORT
-        value: "4000"
-      - key: SUPABASE_URL
-        sync: false
-      - key: SUPABASE_PUBLISHABLE_KEY
-        sync: false
-      - key: SUPABASE_SECRET_KEY
-        sync: false
-      - key: SUPABASE_JWKS_URL
-        sync: false
-
 services:
   - type: web
     name: resolv-hq-backend
@@ -34,7 +18,18 @@ services:
     # A failed migration exits the container and the deploy is marked failed.
     dockerCommand: npm run start:migrate
     envVars:
-      - fromGroup: resolv-hq-backend-shared
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "4000"
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_PUBLISHABLE_KEY
+        sync: false
+      - key: SUPABASE_SECRET_KEY
+        sync: false
+      - key: SUPABASE_JWKS_URL
+        sync: false
       - key: DATABASE_URL
         sync: false
       - key: DIRECT_URL
@@ -56,7 +51,18 @@ services:
     autoDeployTrigger: checksPass
     dockerCommand: npm run start:migrate
     envVars:
-      - fromGroup: resolv-hq-backend-shared
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "4000"
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_PUBLISHABLE_KEY
+        sync: false
+      - key: SUPABASE_SECRET_KEY
+        sync: false
+      - key: SUPABASE_JWKS_URL
+        sync: false
       - key: DATABASE_URL
         sync: false
       - key: DIRECT_URL
