@@ -8,6 +8,7 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
+    "start:migrate": "prisma migrate deploy && node dist/index.js",
     "mcp:stdio": "node dist/mcp-stdio.js",
     "mcp:stdio:dev": "tsx src/mcp-stdio.ts",
     "test": "tsx --test tests/*.test.ts",
