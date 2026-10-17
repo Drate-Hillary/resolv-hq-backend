@@ -20,7 +20,15 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+      # The suite needs no real services; these only satisfy the startup checks
+      # (lib/supabase.ts throws on missing values, Prisma wants a URL shape).
       - run: npm test
+        env:
+          SUPABASE_URL: http://localhost:54321
+          SUPABASE_SECRET_KEY: ci-placeholder
+          SUPABASE_PUBLISHABLE_KEY: ci-placeholder
+          DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
+          DIRECT_URL: postgresql://ci:ci@localhost:5432/ci
 
   build:
     needs: test
