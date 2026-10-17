@@ -17,9 +17,9 @@ Pushing to the branch deploys. Pull requests only run checks.
    `DATABASE_URL`, `DIRECT_URL`, `ALLOWED_ORIGINS`, `REDIS_URL`, `RABBITMQ_URL`, and in the shared group `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SECRET_KEY`, `SUPABASE_JWKS_URL`.
 3. Redis is optional (rate limiting and caching fail open); create a Render Key Value instance and use its internal URL if you want it. RabbitMQ is optional too, but the `localhost` default will not work on Render, so leave it unset or point it at a hosted broker.
 
-`DIRECT_URL` must be the non-pooled connection: the pre-deploy command (`prisma migrate deploy`) needs it.
+`DIRECT_URL` must be the non-pooled connection: the start command (`prisma migrate deploy`) needs it.
 `ALLOWED_ORIGINS` must list the real frontend origins or the browser blocks every API call.
-`preDeployCommand` needs a paid instance type (the blueprint uses `starter`). On a free instance, remove it and run `npm run migrate:deploy` yourself.
+The blueprint uses the `free` plan, which has no pre-deploy command, so `dockerCommand` runs `prisma migrate deploy` before starting the server. Free instances sleep after ~15 minutes idle (the first request takes ~1 minute to wake them) and share 750 instance-hours a month across the workspace, so WebSockets and the RabbitMQ consumer drop while asleep. Move to a paid plan for always-on production.
 
 Deploys: Render deploys a branch once the GitHub Actions checks pass on it (`autoDeployTrigger: checksPass`).
 
