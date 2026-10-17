@@ -14,7 +14,7 @@ Pushing to the branch deploys. Pull requests only run checks.
 
 1. Render dashboard > New > Blueprint, pick this repo. `render.yaml` creates `resolv-hq-backend` (branch `main`) and `resolv-hq-backend-staging` (branch `Dev`).
 2. Fill in the `sync: false` values on each service (names are in `.env.example`):
-   `DATABASE_URL`, `DIRECT_URL`, `ALLOWED_ORIGINS`, `REDIS_URL`, `RABBITMQ_URL`, and in the shared group `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SECRET_KEY`, `SUPABASE_JWKS_URL`.
+   `DATABASE_URL`, `DIRECT_URL`, `ALLOWED_ORIGINS`, `REDIS_URL`, `RABBITMQ_URL`, `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SECRET_KEY`, `SUPABASE_JWKS_URL`.
 3. Redis is optional (rate limiting and caching fail open); create a Render Key Value instance and use its internal URL if you want it. RabbitMQ is optional too, but the `localhost` default will not work on Render, so leave it unset or point it at a hosted broker.
 
 `DIRECT_URL` must be the non-pooled connection: the start command (`prisma migrate deploy`) needs it.
