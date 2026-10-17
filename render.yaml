@@ -1,0 +1,69 @@
+# Render Blueprint. Dev -> staging, main -> production.
+# Secrets are declared with sync: false and filled in the Render dashboard
+# (see docs/deployment.md); they are never stored in this file.
+#
+# autoDeployTrigger: checksPass deploys only after the GitHub Actions checks
+# (docker-image.yml: build + tests) pass on that branch.
+
+envVarGroups:
+  - name: resolv-hq-backend-shared
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "4000"
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_PUBLISHABLE_KEY
+        sync: false
+      - key: SUPABASE_SECRET_KEY
+        sync: false
+      - key: SUPABASE_JWKS_URL
+        sync: false
+
+services:
+  - type: web
+    name: resolv-hq-backend
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    branch: main
+    plan: starter
+    healthCheckPath: /health
+    autoDeployTrigger: checksPass
+    # Needs a paid instance type. Runs before each deploy goes live; a failed
+    # migration aborts the deploy and the old version keeps serving.
+    preDeployCommand: npx prisma migrate deploy
+    envVars:
+      - fromGroup: resolv-hq-backend-shared
+      - key: DATABASE_URL
+        sync: false
+      - key: DIRECT_URL
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: RABBITMQ_URL
+        sync: false
+
+  - type: web
+    name: resolv-hq-backend-staging
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    branch: Dev
+    plan: starter
+    healthCheckPath: /health
+    autoDeployTrigger: checksPass
+    preDeployCommand: npx prisma migrate deploy
+    envVars:
+      - fromGroup: resolv-hq-backend-shared
+      - key: DATABASE_URL
+        sync: false
+      - key: DIRECT_URL
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: RABBITMQ_URL
+        sync: false
