@@ -32,7 +32,7 @@ services:
     autoDeployTrigger: checksPass
     # Free instances have no preDeployCommand, so migrations run at start.
     # A failed migration exits the container and the deploy is marked failed.
-    dockerCommand: sh -c "npx prisma migrate deploy && node dist/index.js"
+    dockerCommand: npm run start:migrate
     envVars:
       - fromGroup: resolv-hq-backend-shared
       - key: DATABASE_URL
@@ -54,7 +54,7 @@ services:
     plan: free
     healthCheckPath: /health
     autoDeployTrigger: checksPass
-    dockerCommand: sh -c "npx prisma migrate deploy && node dist/index.js"
+    dockerCommand: npm run start:migrate
     envVars:
       - fromGroup: resolv-hq-backend-shared
       - key: DATABASE_URL
