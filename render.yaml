@@ -27,12 +27,12 @@ services:
     runtime: docker
     dockerfilePath: ./Dockerfile
     branch: main
-    plan: starter
+    plan: free
     healthCheckPath: /health
     autoDeployTrigger: checksPass
-    # Needs a paid instance type. Runs before each deploy goes live; a failed
-    # migration aborts the deploy and the old version keeps serving.
-    preDeployCommand: npx prisma migrate deploy
+    # Free instances have no preDeployCommand, so migrations run at start.
+    # A failed migration exits the container and the deploy is marked failed.
+    dockerCommand: sh -c "npx prisma migrate deploy && node dist/index.js"
     envVars:
       - fromGroup: resolv-hq-backend-shared
       - key: DATABASE_URL
@@ -51,10 +51,10 @@ services:
     runtime: docker
     dockerfilePath: ./Dockerfile
     branch: Dev
-    plan: starter
+    plan: free
     healthCheckPath: /health
     autoDeployTrigger: checksPass
-    preDeployCommand: npx prisma migrate deploy
+    dockerCommand: sh -c "npx prisma migrate deploy && node dist/index.js"
     envVars:
       - fromGroup: resolv-hq-backend-shared
       - key: DATABASE_URL
