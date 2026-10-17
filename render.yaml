@@ -37,9 +37,21 @@ services:
       - key: ALLOWED_ORIGINS
         sync: false
       - key: REDIS_URL
-        sync: false
+        fromService:
+          type: keyvalue
+          name: resolv-hq-redis
+          property: connectionString
       - key: RABBITMQ_URL
         sync: false
+
+  # Backs rate limiting, LLM response caching and realtime fan-out. Internal
+  # only (no allowed IPs). Render allows one free Key Value per workspace, so
+  # staging does not get one: set its REDIS_URL by hand if you need it.
+  - type: keyvalue
+    name: resolv-hq-redis
+    plan: free
+    maxmemoryPolicy: allkeys-lru
+    ipAllowList: []
 
   - type: web
     name: resolv-hq-backend-staging
