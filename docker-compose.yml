@@ -26,8 +26,10 @@ services:
       # Overrides whatever REDIS_URL is in .env — inside Compose, Redis is
       # only ever reachable by its service name, never localhost.
       REDIS_URL: redis://redis:6379
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
     depends_on:
       - redis
+      - rabbitmq
     ports:
       # Host port 3001 -> the API's PORT (4000) inside the container. Host side
       # is overridable (BACKEND_HOST_PORT in .env).
@@ -42,6 +44,15 @@ services:
       # useful for iterating on rate-limit/caching code with hot reload
       # while still using the Dockerized Redis.
       - "6379:6379"
+    restart: unless-stopped
+
+  rabbitmq:
+    # Message bus between the services. 5672 is AMQP; 15672 is the management
+    # UI (guest / guest), handy for watching the resolv.console queue.
+    image: rabbitmq:3-management-alpine
+    ports:
+      - "5672:5672"
+      - "15672:15672"
     restart: unless-stopped
 
   admin-app:
