@@ -1,4 +1,5 @@
 import { publishEvent } from "../lib/bus.js";
+import { publish } from "../lib/realtime.js";
 import { Prisma } from "@prisma/client";
 import { Router, type Request, type Response } from "express";
 import { formatEscalationDraft, type EscalationDraft } from "../lib/agent-tools.js";
@@ -104,6 +105,13 @@ router.post(
       account,
       isStaffRole(user.role),
       customerMemory,
+      // Pushed as each model call finishes so the console's token count climbs
+      // during the run instead of jumping when the response lands.
+      (usage) =>
+        void publish(
+          { userIds: [user.id] },
+          { type: "usage", conversationId: req.params.id, ...usage },
+        ),
     );
 
     const assistantRow = (await prisma.ai_messages.create({
@@ -189,9 +197,11 @@ router.post(
       trace: answer.trace ?? [],
       timeline,
       handoffs: answer.steps.filter((s) => s.startsWith("Handoff:")),
+      // From the model-call events, not the saved timeline: the timeline is
+      // empty when no run row was recorded, which would report 0 for a real call.
       tokens: {
-        input: timeline.reduce((n, r) => n + (r.input_tokens ?? 0), 0),
-        output: timeline.reduce((n, r) => n + (r.output_tokens ?? 0), 0),
+        input: (answer.traceEvents ?? []).reduce((n, e) => n + (e.inputTokens ?? 0), 0),
+        output: (answer.traceEvents ?? []).reduce((n, e) => n + (e.outputTokens ?? 0), 0),
       },
       fallbackReason: answer.fallbackReason ?? null,
       knowledgeCount: new Set(knowledgeInputs.map((k) => k.id)).size,

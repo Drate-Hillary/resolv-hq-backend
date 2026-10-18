@@ -83,6 +83,8 @@ export async function runReActLoop(
   knowledge: AiKnowledgeInput[],
   activeRequests: AiRequestInput[],
   account: AiAccountInput,
+  /** Called after each model call with that call's token usage, so a caller can show a run's cost as it grows. */
+  onUsage?: (usage: { inputTokens: number; outputTokens: number }) => void,
 ): Promise<ReActResult> {
   const messages: LlmMessage[] = [
     { role: "system", content: systemPrompt },
@@ -139,6 +141,7 @@ export async function runReActLoop(
         : truncateAtBoundary(result.content ?? "", TRACE_DETAIL_CHARS),
       latencyMs: Date.now() - modelStart,
     });
+    if (result.usage) onUsage?.({ inputTokens: result.usage.inputTokens, outputTokens: result.usage.outputTokens });
     attempts ??= result.attempts ?? [];
     for (const providerId of result.failedProviderIds ?? []) excludedProviderIds.add(providerId);
     for (const handoff of result.handoffs ?? []) {

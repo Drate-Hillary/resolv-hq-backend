@@ -226,6 +226,7 @@ export async function generateAssistantReply(
   account: AiAccountInput,
   isStaffCaller = false,
   customerMemory: AiMemoryInput[] = [],
+  onUsage?: (usage: { inputTokens: number; outputTokens: number }) => void,
 ): Promise<AiAnswer> {
   // Clarification Prompting Logic: a deterministic gate, not a prompt
   // instruction — runs before the LLM (or the keyword fallback) ever sees
@@ -280,7 +281,7 @@ export async function generateAssistantReply(
     // ReAct Loop Core Implementation (lib/react-agent.ts): Sense (query +
     // context, above) -> Plan -> Act -> Observe, repeated until the model
     // responds with a final answer instead of another tool call.
-    const result = await runReActLoop(systemPrompt, query, knowledge, activeRequests, account);
+    const result = await runReActLoop(systemPrompt, query, knowledge, activeRequests, account, onUsage);
 
     // Structural backstop: the prompt (lib/prompts/system-prompt.ts, rule 2)
     // already tells the model never to claim a fabricated action, but that's
