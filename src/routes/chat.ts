@@ -147,7 +147,8 @@ router.post(
             prompt_version: SYSTEM_PROMPT_VERSION,
             completed_at: escalated ? null : new Date(),
             error_message: answer.flow.failureReason ?? null,
-            tool_input: answer.flow as unknown as Prisma.InputJsonValue,
+            // The structured draft rides along so approving it can file the real request.
+            tool_input: { ...answer.flow, ...(answer.escalationDraft ? { escalationDraft: answer.escalationDraft } : {}) } as unknown as Prisma.InputJsonValue,
           },
         });
       } catch (err) {
