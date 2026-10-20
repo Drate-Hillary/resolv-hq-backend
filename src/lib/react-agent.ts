@@ -25,6 +25,7 @@ import {
   type ProviderHandoff,
 } from "./llm/gateway.js";
 import type { LlmMessage } from "./llm/types.js";
+import { DELEGATE_TOOL, runSubAgent, type SubAgentRun } from "./sub-agents.js";
 import { getActiveToolDefinitions } from "./tool-registry.js";
 
 export interface ReActStep {
@@ -37,6 +38,8 @@ export interface ReActStep {
  * from `trace` above, which is the display-oriented Plan/Act/Observe list. */
 export interface TraceEvent {
   kind: "model_call" | "tool_call";
+  /** Set when a sub-agent (lib/sub-agents.ts) made this call rather than the main agent. */
+  agent?: string;
   iteration: number;
   provider?: string;
   model?: string;
@@ -74,6 +77,12 @@ export interface ReActResult {
  * can't loop (and rack up provider calls) forever. */
 const MAX_ITERATIONS = 4;
 
+/** Ceiling on sub-agent jobs per turn, so delegation can't multiply provider calls without bound. */
+const MAX_DELEGATIONS = 4;
+
+/** Tools the coordinator keeps when it delegates; the read-only lookups move to the sub-agents. */
+const COORDINATOR_OWN_TOOLS = new Set(["draft_escalation_ticket"]);
+
 const FALLBACK_ON_EXHAUSTION =
   "I wasn't able to work through this fully — could you rephrase your question, or would you like me to open a support request instead?";
 
@@ -85,6 +94,8 @@ export async function runReActLoop(
   account: AiAccountInput,
   /** Called after each model call with that call's token usage, so a caller can show a run's cost as it grows. */
   onUsage?: (usage: { inputTokens: number; outputTokens: number }) => void,
+  /** When set, the retrieved knowledge is not in `systemPrompt`; this agent hands it to sub-agents instead. */
+  delegation?: { knowledgeContext: string },
 ): Promise<ReActResult> {
   const messages: LlmMessage[] = [
     { role: "system", content: systemPrompt },
@@ -96,8 +107,14 @@ export async function runReActLoop(
   const handoffs: ProviderHandoff[] = [];
   const excludedProviderIds = new Set<string>();
   let escalationDraft: EscalationDraft | undefined;
-  const tools = await getActiveToolDefinitions();
+  const activeTools = await getActiveToolDefinitions();
+  // In sub-agent mode the coordinator sees one delegate tool (plus the drafting tool), which also
+  // keeps the long list of tool schemas out of every model call.
+  const tools = delegation
+    ? [DELEGATE_TOOL, ...activeTools.filter((t) => COORDINATOR_OWN_TOOLS.has(t.name))]
+    : activeTools;
   const allowedTools = new Set(tools.map((t) => t.name));
+  let delegationsUsed = 0;
 
   for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     let result: GatewayResult;
@@ -155,6 +172,34 @@ export async function runReActLoop(
       trace.push({ phase: "plan", detail: `Decided to call: ${result.toolCalls.map((c) => c.name).join(", ")}` });
       messages.push({ role: "assistant", content: result.content, toolCalls: result.toolCalls });
 
+      // Start every delegated job now so independent sub-agents run side by side;
+      // results are collected below in the order the model asked for them.
+      const delegated = new Map<string, Promise<SubAgentRun>>();
+      if (delegation) {
+        for (const call of result.toolCalls) {
+          if (call.name !== DELEGATE_TOOL.name || call.argumentsParseError || delegationsUsed >= MAX_DELEGATIONS) continue;
+          delegationsUsed++;
+          delegated.set(
+            call.id,
+            runSubAgent(call.arguments.agent, call.arguments.task, {
+              knowledge,
+              activeRequests,
+              account,
+              knowledgeContext: delegation.knowledgeContext,
+              activeTools,
+              excludedProviderIds: [...excludedProviderIds],
+              onUsage,
+            }).catch((err): SubAgentRun => ({
+              agent: String(call.arguments.agent ?? "unknown"),
+              text: "That sub-agent hit an unexpected error. Answer from what you already have, or offer to open a support request.",
+              events: [{ kind: "tool_call", iteration, detail: "Sub-agent crashed", latencyMs: 0, error: err instanceof Error ? err.message : String(err) }],
+              failed: true,
+              failedProviderIds: [],
+            })),
+          );
+        }
+      }
+
       for (const call of result.toolCalls) {
         if (call.argumentsParseError) {
           const observation = `Your call to "${call.name}" could not be executed: its arguments were not valid (${call.argumentsParseError}). Retry with a corrected JSON arguments object.`;
@@ -187,6 +232,36 @@ export async function runReActLoop(
             error: "tool not in allow-list",
           });
           messages.push({ role: "tool", toolCallId: call.id, content: observation });
+          continue;
+        }
+
+        if (call.name === DELEGATE_TOOL.name) {
+          const job = delegated.get(call.id);
+          const detail = `${call.name}(${JSON.stringify(call.arguments)})`;
+          trace.push({ phase: "act", detail });
+          if (!job) {
+            const observation = `Delegation limit of ${MAX_DELEGATIONS} sub-agent jobs per turn reached. Answer from what you already have.`;
+            trace.push({ phase: "observe", detail: observation });
+            traceEvents.push({ kind: "tool_call", iteration, toolName: call.name, toolInput: call.arguments, detail: observation, latencyMs: 0, error: "delegation limit" });
+            messages.push({ role: "tool", toolCallId: call.id, content: observation });
+            continue;
+          }
+          const delegateStart = Date.now();
+          const run = await job;
+          for (const providerId of run.failedProviderIds) excludedProviderIds.add(providerId);
+          traceEvents.push(...run.events);
+          traceEvents.push({
+            kind: "tool_call",
+            iteration,
+            toolName: call.name,
+            toolInput: call.arguments,
+            detail: truncateAtBoundary(run.text, TRACE_DETAIL_CHARS),
+            latencyMs: Date.now() - delegateStart,
+            error: run.failed ? `sub-agent ${run.agent} failed` : undefined,
+          });
+          const observation = `[${run.agent}] ${run.text}`;
+          trace.push({ phase: "observe", detail: observation.slice(0, 200) });
+          messages.push({ role: "tool", toolCallId: call.id, content: truncateAtBoundary(observation, TOOL_OBSERVATION_BUDGET_CHARS) });
           continue;
         }
 

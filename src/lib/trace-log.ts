@@ -15,6 +15,7 @@ export interface TraceLogRow {
   provider: string | null;
   model: string | null;
   prompt_version: string | null;
+  agent_name: string | null;
   tool_name: string | null;
   tool_input: Prisma.InputJsonValue | null;
   detail: string | null;
@@ -34,7 +35,7 @@ export function buildTraceRows(
 ): TraceLogRow[] {
   const rows: Omit<TraceLogRow, "seq">[] = [];
   const blank = {
-    iteration: null, provider: null, model: null, prompt_version: null, tool_name: null,
+    iteration: null, provider: null, model: null, prompt_version: null, agent_name: null, tool_name: null,
     tool_input: null, detail: null, latency_ms: null, input_tokens: null, output_tokens: null, error: null, outcome: null,
   };
 
@@ -54,6 +55,7 @@ export function buildTraceRows(
       provider: e.provider ?? null,
       model: e.model ?? null,
       prompt_version: e.kind === "model_call" ? meta.promptVersion : null,
+      agent_name: e.agent ?? null,
       tool_name: e.toolName ?? null,
       tool_input: (e.toolInput as Prisma.InputJsonValue | undefined) ?? null,
       detail: e.detail,
