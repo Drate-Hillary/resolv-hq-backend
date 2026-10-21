@@ -233,7 +233,6 @@ export async function generateAssistantReply(
   isStaffCaller = false,
   customerMemory: AiMemoryInput[] = [],
   onUsage?: (usage: { inputTokens: number; outputTokens: number }) => void,
-  history: { role: "user" | "assistant"; content: string }[] = [],
 ): Promise<AiAnswer> {
   // Clarification Prompting Logic: a deterministic gate, not a prompt
   // instruction — runs before the LLM (or the keyword fallback) ever sees
@@ -300,7 +299,6 @@ export async function generateAssistantReply(
       account,
       onUsage,
       delegateKnowledge ? { knowledgeContext } : undefined,
-      history,
     );
 
     // Structural backstop: the prompt (lib/prompts/system-prompt.ts, rule 2)

@@ -49,11 +49,6 @@ fake.ai_messages = {
     db.messages.push(row);
     return row;
   },
-  findMany: async ({ where, take }: { where: Row; take?: number }) =>
-    db.messages
-      .filter((m) => m.conversation_id === where.conversation_id && (where.sender_type.in as string[]).includes(m.sender_type as string))
-      .reverse()
-      .slice(0, take),
   count: async ({ where }: { where: Row }) =>
     db.messages.filter((m) => m.conversation_id === where.conversation_id && m.sender_type === where.sender_type).length,
 };

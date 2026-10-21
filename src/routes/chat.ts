@@ -21,9 +21,6 @@ const router = Router();
 /** Customer messages (questions) allowed in one conversation; the client asks for a new chat after this. */
 export const MAX_MESSAGES_PER_CONVERSATION = 50;
 
-/** Most recent messages sent back to the model as context for a follow-up. */
-const CONVERSATION_HISTORY_TURNS = 10;
-
 /**
  * customer_id is "the owning user" for both callers of this table today:
  * the customer app's real assistant chat, and resolv-hq's internal staff
@@ -102,16 +99,6 @@ router.post(
       );
     }
 
-    // Earlier turns go to the model so a reopened conversation continues where it left off.
-    const priorRows = (await prisma.ai_messages.findMany({
-      where: { conversation_id: req.params.id, sender_type: { in: ["customer", "assistant"] } },
-      orderBy: { created_at: "desc" },
-      take: CONVERSATION_HISTORY_TURNS,
-    })) as unknown as AiMessageRow[];
-    const history = priorRows
-      .reverse()
-      .map((m) => ({ role: m.sender_type === "customer" ? ("user" as const) : ("assistant" as const), content: m.content }));
-
     const userRow = (await prisma.ai_messages.create({
       data: { conversation_id: req.params.id, sender_type: "customer", content },
     })) as unknown as AiMessageRow;
@@ -138,7 +125,6 @@ router.post(
           { userIds: [user.id] },
           { type: "usage", conversationId: req.params.id, ...usage },
         ),
-      history,
     );
 
     const assistantRow = (await prisma.ai_messages.create({

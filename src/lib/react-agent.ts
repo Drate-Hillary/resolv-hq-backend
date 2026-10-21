@@ -96,12 +96,9 @@ export async function runReActLoop(
   onUsage?: (usage: { inputTokens: number; outputTokens: number }) => void,
   /** When set, the retrieved knowledge is not in `systemPrompt`; this agent hands it to sub-agents instead. */
   delegation?: { knowledgeContext: string },
-  /** Earlier turns of this conversation (oldest first), so a reopened chat continues rather than restarts. */
-  history: { role: "user" | "assistant"; content: string }[] = [],
 ): Promise<ReActResult> {
   const messages: LlmMessage[] = [
     { role: "system", content: systemPrompt },
-    ...history.map((m) => ({ role: m.role, content: m.content })),
     { role: "user", content: query },
   ];
   const trace: ReActStep[] = [];
