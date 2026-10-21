@@ -37,6 +37,7 @@ export async function loadCallerRequests(user: AuthenticatedUser): Promise<AiReq
   const statuses = await loadStatuses();
   const finalIds = statuses.filter((status) => status.is_final).map((status) => status.id);
   const statusNameById = new Map(statuses.map((status) => [status.id, status.name]));
+  const finalIdSet = new Set(finalIds);
   const rows = (await prisma.requests.findMany({
     where: isStaffRole(user.role)
       ? finalIds.length > 0
@@ -49,6 +50,10 @@ export async function loadCallerRequests(user: AuthenticatedUser): Promise<AiReq
     id: row.id,
     title: row.title,
     status: row.status_id ? statusNameById.get(row.status_id) ?? "unknown" : "unknown",
+    isFinal: row.status_id ? finalIdSet.has(row.status_id) : false,
+    ticketNumber: row.ticket_number === undefined || row.ticket_number === null ? undefined : Number(row.ticket_number),
+    priority: row.priority ?? null,
+    createdAt: row.created_at ? new Date(row.created_at as unknown as string).toISOString().slice(0, 10) : null,
   }));
 }
 

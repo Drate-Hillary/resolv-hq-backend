@@ -35,6 +35,11 @@ export interface AiRequestInput {
   id: string;
   title: string;
   status: string;
+  /** True once the request has reached a final status (resolved or closed). */
+  isFinal?: boolean;
+  ticketNumber?: number;
+  priority?: string | null;
+  createdAt?: string | null;
 }
 
 export interface AiAccountInput {
