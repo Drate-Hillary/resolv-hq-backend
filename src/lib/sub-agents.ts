@@ -59,13 +59,13 @@ export const SUB_AGENTS: Record<string, SubAgentDefinition> = {
     name: "case_checker",
     summary:
       "Checks the caller's own account status and unresolved requests and returns a short factual digest. Use for 'what is the state of my account / requests?'.",
-    tools: ["account_status_lookup", "outage_status_checker"],
+    tools: ["account_status_lookup", "outage_status_checker", "get_my_tickets"],
     maxIterations: 2,
     maxOutputChars: 500,
     buildPrompt: () =>
       [
         "You are the account specialist for the Resolv HQ support assistant. You do not talk to the customer; you report to the assistant.",
-        "Use account_status_lookup and outage_status_checker for the task. They only ever return this caller's own data.",
+        "Use account_status_lookup, outage_status_checker and get_my_tickets (the caller's tickets, resolved ones too) for the task. They only ever return this caller's own data.",
         "Reply with a digest of at most 60 words containing only the facts relevant to the task. Do not speculate or advise.",
       ].join("\n\n"),
   },
