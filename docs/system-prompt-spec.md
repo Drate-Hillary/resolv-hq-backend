@@ -1,6 +1,6 @@
 # Resolv HQ Assistant — Core System Prompt Specification
 
-**Version:** v1.3
+**Version:** v1.4 (adds the sub-agent knowledge note: when the evidence is large, the knowledge section is replaced by an instruction to ask the `researcher` sub-agent via `delegate_to_sub_agent` and cite exactly as its digest does; every other rule is unchanged. Sub-agent prompts are versioned separately as `sa-v1.0` in `src/lib/sub-agents.ts`.)
 **Implements:** `src/lib/prompts/system-prompt.ts` (`SYSTEM_PROMPT_VERSION`)
 **Used by:** `generateAssistantReply()` in `src/lib/ai.ts`, called from `POST /chat/conversations/:id/messages`
 

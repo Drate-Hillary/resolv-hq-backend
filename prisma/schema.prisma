@@ -646,6 +646,7 @@ model agent_trace_logs {
   provider       String?
   model          String?
   prompt_version String?
+  agent_name     String?
   tool_name      String?
   tool_input     Json?
   detail         String?

@@ -21,6 +21,8 @@ Pushing to the branch deploys. Pull requests only run checks.
 `ALLOWED_ORIGINS` must list the real frontend origins or the browser blocks every API call.
 The blueprint uses the `free` plan, which has no pre-deploy command, so `dockerCommand` runs `prisma migrate deploy` before starting the server. Free instances sleep after ~15 minutes idle (the first request takes ~1 minute to wake them) and share 750 instance-hours a month across the workspace, so WebSockets and the RabbitMQ consumer drop while asleep. Move to a paid plan for always-on production.
 
+Optional tuning for sub-agents (see `src/lib/sub-agents.ts`): `SUB_AGENTS` = `auto` (default: delegate only when the retrieved knowledge is larger than `SUB_AGENT_CONTEXT_CHARS`, default 2500), `on` (always) or `off`. The new `agent_name` trace column ships as migration `20261020000000_trace_sub_agent`; the start command applies it.
+
 Deploys: Render deploys a branch once the GitHub Actions checks pass on it (`autoDeployTrigger: checksPass`).
 
 ### Admin app (Vercel)

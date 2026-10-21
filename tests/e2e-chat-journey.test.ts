@@ -49,6 +49,8 @@ fake.ai_messages = {
     db.messages.push(row);
     return row;
   },
+  count: async ({ where }: { where: Row }) =>
+    db.messages.filter((m) => m.conversation_id === where.conversation_id && m.sender_type === where.sender_type).length,
 };
 fake.knowledge_documents = {
   findMany: async () => [

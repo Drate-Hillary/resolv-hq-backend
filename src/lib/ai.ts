@@ -14,6 +14,7 @@ import { checkForClarification } from "./clarification.js";
 import { packIntoBudget } from "./context-budget.js";
 import { buildSystemPrompt } from "./prompts/system-prompt.js";
 import { runReActLoop, type ReActStep, type TraceEvent } from "./react-agent.js";
+import { shouldUseSubAgents } from "./sub-agents.js";
 import { isRelevant, queryTerms, scoreText } from "./text-match.js";
 import { stagesFromTrace, type AgentFlowRecord } from "./llm/flow-log.js";
 import { GatewayUnavailableError, type ProviderHandoff } from "./llm/gateway.js";
@@ -34,6 +35,11 @@ export interface AiRequestInput {
   id: string;
   title: string;
   status: string;
+  /** True once the request has reached a final status (resolved or closed). */
+  isFinal?: boolean;
+  ticketNumber?: number;
+  priority?: string | null;
+  createdAt?: string | null;
 }
 
 export interface AiAccountInput {
@@ -271,17 +277,29 @@ export async function generateAssistantReply(
       Number(process.env.CUSTOMER_MEMORY_CONTEXT_BUDGET_CHARS) || 1200,
     );
 
+    // Large evidence is read once by a researcher sub-agent (lib/sub-agents.ts) instead of
+    // riding along in every coordinator call; small contexts stay inline, where that is cheaper.
+    const delegateKnowledge = knowledgeContext.length > 0 && shouldUseSubAgents(knowledgeContext);
     const systemPrompt = buildSystemPrompt({
       knowledgeContext,
       requestContext,
       customerMemoryContext: memoryContext,
       isStaffCaller,
+      delegateKnowledge,
     });
 
     // ReAct Loop Core Implementation (lib/react-agent.ts): Sense (query +
     // context, above) -> Plan -> Act -> Observe, repeated until the model
     // responds with a final answer instead of another tool call.
-    const result = await runReActLoop(systemPrompt, query, knowledge, activeRequests, account, onUsage);
+    const result = await runReActLoop(
+      systemPrompt,
+      query,
+      knowledge,
+      activeRequests,
+      account,
+      onUsage,
+      delegateKnowledge ? { knowledgeContext } : undefined,
+    );
 
     // Structural backstop: the prompt (lib/prompts/system-prompt.ts, rule 2)
     // already tells the model never to claim a fabricated action, but that's

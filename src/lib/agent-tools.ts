@@ -57,6 +57,24 @@ export const AGENT_TOOL_DEFINITIONS: LlmToolDefinition[] = [
     },
   },
   {
+    name: "get_my_tickets",
+    description:
+      "Fetch the caller's own support tickets (number, title, status, priority, date). Use this when the caller asks about a ticket, their requests, or whether they already reported something, before drafting a new one. Optionally filter by status group or a keyword. It only ever returns the caller's own tickets.",
+    parameters: {
+      type: "object",
+      properties: {
+        status: {
+          type: "string",
+          enum: ["open", "resolved", "all"],
+          description: "Which tickets to return. Defaults to all.",
+        },
+        query: { type: "string", description: "Optional keyword to match against ticket titles, or a ticket number." },
+      },
+      required: [],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "draft_escalation_ticket",
     description:
       "Prepare a DRAFT escalation ticket (title, description, suggested category and priority) for a human to review and file — this does not create or submit anything. Use this when the caller needs something a human must act on, then tell them you've prepared it for review, never that it has been filed.",
@@ -142,7 +160,39 @@ function accountStatusLookup(account: AiAccountInput): string {
   return parts.filter(Boolean).join("\n");
 }
 
-export function outageStatusCheckerResult(activeRequests: AiRequestInput[]) {
+const MAX_TICKETS_RETURNED = 10;
+
+/** Read-only lookup over the caller's already-loaded requests. The list is
+ * scoped to the caller upstream (loadCallerRequests), so no argument can widen it. */
+export function getMyTicketsResult(args: Record<string, unknown>, requests: AiRequestInput[]) {
+  const group = args.status === "open" || args.status === "resolved" ? args.status : "all";
+  const query = typeof args.query === "string" ? args.query.trim().replace(/^#/, "") : "";
+  const matches = requests
+    .filter((r) => (group === "open" ? !r.isFinal : group === "resolved" ? r.isFinal === true : true))
+    .filter((r) => !query || String(r.ticketNumber ?? "") === query || isRelevant(query, r.title))
+    .slice(0, MAX_TICKETS_RETURNED);
+  return {
+    tickets: matches.map((r) => ({
+      ticketNumber: r.ticketNumber ?? null,
+      title: r.title,
+      status: r.status,
+      priority: r.priority ?? null,
+      createdAt: r.createdAt ?? null,
+    })),
+    message: matches.length === 0 ? "No matching tickets on file for this caller." : `${matches.length} ticket(s) found.`,
+  };
+}
+
+function getMyTickets(args: Record<string, unknown>, requests: AiRequestInput[]): string {
+  const result = getMyTicketsResult(args, requests);
+  if (result.tickets.length === 0) return result.message;
+  return result.tickets
+    .map((t) => `- ${t.ticketNumber ? `#${t.ticketNumber} ` : ""}"${t.title}": ${t.status}${t.priority ? `, ${t.priority} priority` : ""}${t.createdAt ? `, opened ${t.createdAt}` : ""}`)
+    .join("\n");
+}
+
+export function outageStatusCheckerResult(allRequests: AiRequestInput[]) {
+  const activeRequests = allRequests.filter((r) => !r.isFinal);
   return {
     openIssues: activeRequests.map(({ title, status }) => ({ title, status })),
     message:
@@ -152,7 +202,8 @@ export function outageStatusCheckerResult(activeRequests: AiRequestInput[]) {
   };
 }
 
-function outageStatusChecker(activeRequests: AiRequestInput[]): string {
+function outageStatusChecker(allRequests: AiRequestInput[]): string {
+  const activeRequests = allRequests.filter((r) => !r.isFinal);
   if (activeRequests.length === 0) {
     return "No known open issues — nothing currently on file is unresolved.";
   }
@@ -206,6 +257,8 @@ export function executeAgentTool(
       return accountStatusLookup(context.account);
     case "outage_status_checker":
       return outageStatusChecker(context.activeRequests);
+    case "get_my_tickets":
+      return getMyTickets(args, context.activeRequests);
     case "draft_escalation_ticket":
       return draftEscalationTicket(args);
     default:
