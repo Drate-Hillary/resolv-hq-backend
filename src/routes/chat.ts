@@ -4,7 +4,7 @@ import { Prisma } from "@prisma/client";
 import { Router, type Request, type Response } from "express";
 import { formatEscalationDraft, type EscalationDraft } from "../lib/agent-tools.js";
 import { generateAssistantReply } from "../lib/ai.js";
-import { badRequest, notFound } from "../lib/errors.js";
+import { HttpError, badRequest, notFound } from "../lib/errors.js";
 import { mapChatMessageRow, mapConversationRow } from "../lib/mappers.js";
 import { isStaffRole, loadCallerAccount, loadCallerKnowledge, loadCallerRequests } from "../lib/agent-tool-context.js";
 import { notifyStaff } from "../lib/notify.js";
@@ -17,6 +17,9 @@ import { asyncRoute } from "../middleware/error-handler.js";
 import type { AiConversationRow, AiMessageRow } from "../types/database.types.js";
 
 const router = Router();
+
+/** Customer messages (questions) allowed in one conversation; the client asks for a new chat after this. */
+export const MAX_MESSAGES_PER_CONVERSATION = 50;
 
 /**
  * customer_id is "the owning user" for both callers of this table today:
@@ -85,6 +88,16 @@ router.post(
     await assertConversationAccess(req.params.id, user);
     const { content } = req.body as { content?: string };
     if (!content) throw badRequest("content is required");
+
+    const sent = await prisma.ai_messages.count({
+      where: { conversation_id: req.params.id, sender_type: "customer" },
+    });
+    if (sent >= MAX_MESSAGES_PER_CONVERSATION) {
+      throw new HttpError(
+        409,
+        `This chat has reached its ${MAX_MESSAGES_PER_CONVERSATION}-message limit. Please start a new chat.`,
+      );
+    }
 
     const userRow = (await prisma.ai_messages.create({
       data: { conversation_id: req.params.id, sender_type: "customer", content },
