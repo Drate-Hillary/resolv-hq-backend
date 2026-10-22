@@ -398,7 +398,13 @@ router.post(
       else await notifyStaff(note, user.id);
     }
 
-    res.status(201).json(mapAttachmentRow(row, await getAttachmentSignedUrl(storagePath)));
+    const mapped = mapAttachmentRow(row, await getAttachmentSignedUrl(storagePath));
+    // Tell open tickets/chats so the file appears on its message without a reload.
+    void publish(
+      { userIds: [access.customer_id], staff: true },
+      { type: "attachment", requestId: req.params.id, messageId: row.message_id, attachment: mapped },
+    );
+    res.status(201).json(mapped);
   }),
 );
 
