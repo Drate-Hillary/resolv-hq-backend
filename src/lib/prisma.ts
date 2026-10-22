@@ -3,12 +3,14 @@ import { PrismaClient } from "@prisma/client";
 // Prisma's default connect timeout is 5s. Cold connections to the Supabase
 // pooler (DNS + TLS + pgbouncer) can exceed that, so the first query after a
 // start fails with P1001 and later ones succeed. Give the connect more room.
-function withConnectTimeout(url: string | undefined, seconds: number): string | undefined {
-  if (!url || /[?&]connect_timeout=/.test(url)) return url;
-  return `${url}${url.includes("?") ? "&" : "?"}connect_timeout=${seconds}`;
+function withParam(url: string | undefined, key: string, value: number): string | undefined {
+  if (!url || new RegExp(`[?&]${key}=`).test(url)) return url;
+  return `${url}${url.includes("?") ? "&" : "?"}${key}=${value}`;
 }
 
-const url = withConnectTimeout(process.env.DATABASE_URL, 30);
+// pool_timeout: how long a query waits for a free connection. While the pooler is slow to
+// connect, the default 10s fails requests (P2024) before the 30s connect attempt gives up.
+const url = withParam(withParam(process.env.DATABASE_URL, "connect_timeout", 30), "pool_timeout", 30);
 
 export const prisma = url ? new PrismaClient({ datasources: { db: { url } } }) : new PrismaClient();
 
