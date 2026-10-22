@@ -60,8 +60,8 @@ export interface GatewayResult {
 
 const CACHE_TTL_SECONDS = 600;
 
-function cacheKey(messages: LlmMessage[], tools?: LlmToolDefinition[]): string {
-  const hash = createHash("sha256").update(JSON.stringify({ messages, tools })).digest("hex");
+function cacheKey(messages: LlmMessage[], tools?: LlmToolDefinition[], preferredProviderId?: string): string {
+  const hash = createHash("sha256").update(JSON.stringify({ messages, tools, preferredProviderId })).digest("hex");
   return `llm:cache:${hash}`;
 }
 
@@ -101,13 +101,16 @@ export function setClientBuilderForTests(fn: typeof buildClient | null): void {
  * Throws GatewayUnavailableError if none are configured or every one of
  * them exhausts its retries — callers decide how to degrade from there.
  * A cache hit short-circuits all of this and never touches a provider.
+ * When `preferredProviderId` names an active provider (an admin picked that
+ * model), it is tried first and the rest remain as fallback.
  */
 export async function completeWithFallback(
   messages: LlmMessage[],
   tools?: LlmToolDefinition[],
   excludedProviderIds: string[] = [],
+  preferredProviderId?: string,
 ): Promise<GatewayResult> {
-  const key = cacheKey(messages, tools);
+  const key = cacheKey(messages, tools, preferredProviderId);
   try {
     const cached = await redis.get(key);
     if (cached) {
@@ -124,7 +127,9 @@ export async function completeWithFallback(
     orderBy: { created_at: "asc" },
   });
   const excludedIds = new Set(excludedProviderIds);
-  const providers = registeredProviders.filter((provider) => !excludedIds.has(provider.id));
+  const providers = registeredProviders
+    .filter((provider) => !excludedIds.has(provider.id))
+    .sort((a, b) => Number(b.id === preferredProviderId) - Number(a.id === preferredProviderId));
   if (providers.length === 0) {
     const message = registeredProviders.length === 0
       ? "No active model providers registered"
