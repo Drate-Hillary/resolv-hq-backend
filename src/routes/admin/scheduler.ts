@@ -15,6 +15,16 @@ import type { AgentFlowRecord, FlowStage } from "../../lib/llm/flow-log.js";
 const router = Router();
 router.use(requireRole("staff"));
 
+/**
+ * Finished tasks drop off the board this many hours after they ended (48 by default;
+ * 0 keeps everything). Only the board's view is trimmed: the agent_runs rows stay, since
+ * they are the audit trail (see lib/retention.ts).
+ */
+function taskTtlHours(): number {
+  const value = Number(process.env.SCHEDULER_TASK_TTL_HOURS ?? 48);
+  return Number.isFinite(value) && value >= 0 ? value : 48;
+}
+
 type Column = "intake" | "planner" | "tools" | "guard" | "approval" | "done";
 
 interface Move {
@@ -51,6 +61,8 @@ function fullName(p?: { first_name: string | null; last_name: string | null } | 
 router.get(
   "/",
   asyncRoute(async (_req: Request, res: Response) => {
+    const ttl = taskTtlHours();
+    const cutoff = new Date(Date.now() - ttl * 60 * 60 * 1000);
     const [statuses, requests, runs] = await Promise.all([
       loadStatuses(),
       prisma.requests.findMany({
@@ -59,6 +71,8 @@ router.get(
         include: { profiles_requests_customer_idToprofiles: { select: { first_name: true, last_name: true } }, request_categories: { select: { name: true } } },
       }),
       prisma.agent_runs.findMany({
+        // Unfinished runs (no completed_at) always stay; finished ones expire.
+        where: ttl > 0 ? { OR: [{ completed_at: null }, { completed_at: { gte: cutoff } }] } : undefined,
         orderBy: { started_at: "desc" },
         take: 40,
         include: {

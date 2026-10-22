@@ -6,7 +6,6 @@ import multer from "multer";
 import { formatEscalationDraft, type EscalationDraft } from "../lib/agent-tools.js";
 import { generateAssistantReply } from "../lib/ai.js";
 import { HttpError, badRequest, notFound } from "../lib/errors.js";
-import { requireRole } from "../lib/auth.js";
 import { extractPages, isIndexable } from "../lib/knowledge-index.js";
 import { completeWithFallback, GatewayUnavailableError } from "../lib/llm/gateway.js";
 import { mapChatMessageRow, mapConversationRow } from "../lib/mappers.js";
@@ -245,13 +244,13 @@ router.post(
 );
 
 /**
- * Staff-only: reads an uploaded PDF/text file and has the model summarise it.
- * Nothing is stored — the file is read from memory and discarded; use
- * POST /admin/knowledge to add a document to the knowledge base instead.
+ * Any signed-in user (customers included): reads an uploaded PDF/text file and
+ * has the model summarise it. Nothing is stored — the file is read from memory
+ * and discarded. Adding a document to the knowledge base stays staff-only
+ * (POST /admin/knowledge), and so does choosing the model.
  */
 router.post(
   "/summarize-document",
-  requireRole("staff"),
   summaryUpload.single("file"),
   asyncRoute(async (req: Request, res: Response) => {
     const file = req.file;
@@ -262,7 +261,7 @@ router.post(
 
     const { providerId } = req.body as { providerId?: string };
     let preferredProviderId: string | undefined;
-    if (providerId?.trim()) {
+    if (providerId?.trim() && isStaffRole(req.user!.role)) {
       const chosen = await prisma.agent_providers.findUnique({ where: { id: providerId }, select: { status: true } });
       if (!chosen) throw badRequest("The selected model is not registered");
       if (chosen.status !== "active") throw badRequest("The selected model is disabled");
