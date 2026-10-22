@@ -103,6 +103,7 @@ export interface SubAgentContext {
   /** Tools the registry currently has active (a sub-agent only gets the overlap with its own list). */
   activeTools: LlmToolDefinition[];
   excludedProviderIds: string[];
+  preferredProviderId?: string;
   onUsage?: (usage: { inputTokens: number; outputTokens: number }) => void;
 }
 
@@ -143,7 +144,7 @@ export async function runSubAgent(agentName: unknown, taskInput: unknown, ctx: S
     const started = Date.now();
     let result: GatewayResult;
     try {
-      result = await completeWithFallback(messages, offered, [...excluded]);
+      result = await completeWithFallback(messages, offered, [...excluded], ctx.preferredProviderId);
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       if (err instanceof GatewayUnavailableError) for (const id of err.failedProviderIds) failedProviderIds.add(id);
