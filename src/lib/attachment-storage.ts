@@ -21,6 +21,30 @@ const ALLOWED_TYPES = new Set([
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 ]);
 
+const MIME_BY_EXTENSION: Record<string, string> = {
+  pdf: "application/pdf",
+  doc: "application/msword",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  xls: "application/vnd.ms-excel",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  txt: "text/plain",
+  csv: "text/csv",
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  webp: "image/webp",
+  heic: "image/heic",
+};
+
+/**
+ * Clients (React Native, some browsers, Windows) often send PDFs and Word files as
+ * application/octet-stream or with no type at all, so fall back to the file extension.
+ */
+export function resolveMimeType(mimeType: string | undefined, fileName: string): string {
+  if (mimeType && mimeType !== "application/octet-stream") return mimeType;
+  return MIME_BY_EXTENSION[fileName.split(".").pop()?.toLowerCase() ?? ""] ?? mimeType ?? "application/octet-stream";
+}
+
 export function isAllowedAttachmentType(mimeType: string): boolean {
   return mimeType.startsWith("image/") || ALLOWED_TYPES.has(mimeType);
 }

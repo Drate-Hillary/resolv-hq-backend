@@ -7,6 +7,7 @@ import {
   getAttachmentSignedUrl,
   isAllowedAttachmentType,
   MAX_ATTACHMENT_BYTES,
+  resolveMimeType,
   uploadAttachmentFile,
 } from "../lib/attachment-storage.js";
 import { buildTimeline, mapAttachmentRow, mapMessageRow, mapRequestRow, priorityToDb, resolveCategoryId } from "../lib/mappers.js";
@@ -343,7 +344,8 @@ router.post(
     const access = await assertRequestAccess(req.params.id, user);
     const file = req.file;
     if (!file) throw badRequest("A file is required");
-    if (!isAllowedAttachmentType(file.mimetype)) {
+    const mimeType = resolveMimeType(file.mimetype, file.originalname);
+    if (!isAllowedAttachmentType(mimeType)) {
       throw badRequest("That file type isn't supported — attach an image, PDF, text, Word or Excel file.");
     }
 
@@ -358,14 +360,14 @@ router.post(
       messageId = message.id;
     }
 
-    const storagePath = await uploadAttachmentFile(req.params.id, file.buffer, file.originalname, file.mimetype);
+    const storagePath = await uploadAttachmentFile(req.params.id, file.buffer, file.originalname, mimeType);
     const row = await prisma.request_attachments.create({
       data: {
         request_id: req.params.id,
         message_id: messageId,
         uploaded_by: user.id,
         file_name: file.originalname,
-        file_type: file.mimetype,
+        file_type: mimeType,
         file_size_bytes: file.size,
         storage_path: storagePath,
       },
@@ -426,8 +428,10 @@ router.post(
   asyncRoute(async (req: Request, res: Response) => {
     const user = req.user!;
     const access = await assertRequestAccess(req.params.id, user);
-    const { text } = req.body as { text?: string };
-    if (!text) throw badRequest("text is required");
+    const { text = "", forAttachment } = req.body as { text?: string; forAttachment?: boolean };
+    // The app posts an empty message first and attaches the file to it, so an
+    // attachment-only message may have no text; anything else needs some.
+    if (typeof text !== "string" || (!text && forAttachment !== true)) throw badRequest("text is required");
 
     const data = (await prisma.request_messages.create({
       data: {
@@ -451,7 +455,7 @@ router.post(
 
     // Notifications are a side effect, so they no longer hold up the reply
     // the sender is waiting on (they used to be awaited before responding).
-    const preview = text.length > 120 ? `${text.slice(0, 117)}…` : text;
+    const preview = text ? (text.length > 120 ? `${text.slice(0, 117)}…` : text) : "Sent an attachment";
     void (async () => {
       try {
         if (isStaff(user.role)) {

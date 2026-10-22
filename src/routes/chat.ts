@@ -3,6 +3,7 @@ import { publish } from "../lib/realtime.js";
 import { Prisma } from "@prisma/client";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
+import { resolveMimeType } from "../lib/attachment-storage.js";
 import { formatEscalationDraft, type EscalationDraft } from "../lib/agent-tools.js";
 import { generateAssistantReply } from "../lib/ai.js";
 import { HttpError, badRequest, notFound } from "../lib/errors.js";
@@ -255,8 +256,8 @@ router.post(
   asyncRoute(async (req: Request, res: Response) => {
     const file = req.file;
     if (!file) throw badRequest("A file is required");
-    if (!isIndexable(file.mimetype, file.originalname)) {
-      throw badRequest("Only PDF and plain-text files can be summarised");
+    if (!isIndexable(resolveMimeType(file.mimetype, file.originalname), file.originalname)) {
+      throw badRequest("Only PDF, Word (.docx) and plain-text files can be summarised");
     }
 
     const { providerId } = req.body as { providerId?: string };
@@ -268,7 +269,7 @@ router.post(
       preferredProviderId = providerId;
     }
 
-    const pages = await extractPages(file.buffer, file.mimetype, file.originalname);
+    const pages = await extractPages(file.buffer, resolveMimeType(file.mimetype, file.originalname), file.originalname);
     if (pages.length === 0) throw badRequest("No readable text was found in that file");
     const full = pages.map((p) => `[Page ${p.page}]\n${p.text.trim()}`).join("\n\n");
     const truncated = full.length > SUMMARY_MAX_CHARS;

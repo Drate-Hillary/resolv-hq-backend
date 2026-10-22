@@ -3,6 +3,7 @@ import type { Request, Response } from "express";
 import { Router } from "express";
 import multer from "multer";
 import { requireRole } from "../../lib/auth.js";
+import { resolveMimeType } from "../../lib/attachment-storage.js";
 import { badRequest, notFound } from "../../lib/errors.js";
 import { deleteKnowledgeFile, getKnowledgeFileSignedUrl, uploadKnowledgeFile } from "../../lib/knowledge-storage.js";
 import { embedDocumentChunks } from "../../lib/embeddings.js";
@@ -65,9 +66,10 @@ router.post(
     let content: string | null = null;
 
     if (file) {
-      file_url = await uploadKnowledgeFile(file.buffer, file.originalname, file.mimetype);
-      file_type = file.mimetype;
-      if (file.mimetype.startsWith("text/") && file.size <= INLINE_TEXT_MAX_BYTES) {
+      const mimeType = resolveMimeType(file.mimetype, file.originalname);
+      file_url = await uploadKnowledgeFile(file.buffer, file.originalname, mimeType);
+      file_type = mimeType;
+      if (mimeType.startsWith("text/") && file.size <= INLINE_TEXT_MAX_BYTES) {
         content = file.buffer.toString("utf-8");
       }
     }
@@ -79,9 +81,9 @@ router.post(
     // Make the document readable by the agent: split it page by page into
     // searchable passages. A failure here must not fail the upload — the file
     // is stored either way, and staff can re-run indexing from the console.
-    if (file && isIndexable(file.mimetype, file.originalname)) {
+    if (file && isIndexable(file_type, file.originalname)) {
       try {
-        const pages = await extractPages(file.buffer, file.mimetype, file.originalname);
+        const pages = await extractPages(file.buffer, file_type, file.originalname);
         await indexPages(data.id, pages);
       } catch (indexError) {
         console.error("knowledge indexing failed:", indexError);
