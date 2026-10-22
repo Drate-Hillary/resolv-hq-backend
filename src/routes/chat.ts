@@ -2,9 +2,13 @@ import { publishEvent } from "../lib/bus.js";
 import { publish } from "../lib/realtime.js";
 import { Prisma } from "@prisma/client";
 import { Router, type Request, type Response } from "express";
+import multer from "multer";
+import { resolveMimeType } from "../lib/attachment-storage.js";
 import { formatEscalationDraft, type EscalationDraft } from "../lib/agent-tools.js";
 import { generateAssistantReply } from "../lib/ai.js";
 import { HttpError, badRequest, notFound } from "../lib/errors.js";
+import { extractPages, isIndexable } from "../lib/knowledge-index.js";
+import { completeWithFallback, GatewayUnavailableError } from "../lib/llm/gateway.js";
 import { mapChatMessageRow, mapConversationRow } from "../lib/mappers.js";
 import { isStaffRole, loadCallerAccount, loadCallerKnowledge, loadCallerRequests } from "../lib/agent-tool-context.js";
 import { notifyStaff } from "../lib/notify.js";
@@ -17,6 +21,11 @@ import { asyncRoute } from "../middleware/error-handler.js";
 import type { AiConversationRow, AiMessageRow } from "../types/database.types.js";
 
 const router = Router();
+
+const summaryUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
+
+/** Cap on document text sent to the model for a summary (~15k tokens). */
+const SUMMARY_MAX_CHARS = 60_000;
 
 /** Customer messages (questions) allowed in one conversation; the client asks for a new chat after this. */
 export const MAX_MESSAGES_PER_CONVERSATION = 50;
@@ -86,8 +95,17 @@ router.post(
   asyncRoute(async (req: Request, res: Response) => {
     const user = req.user!;
     await assertConversationAccess(req.params.id, user);
-    const { content } = req.body as { content?: string };
+    const { content, providerId } = req.body as { content?: string; providerId?: string };
     if (!content) throw badRequest("content is required");
+
+    // Only staff may pick the model; for anyone else the field is ignored.
+    let preferredProviderId: string | undefined;
+    if (providerId && isStaffRole(user.role)) {
+      const chosen = await prisma.agent_providers.findUnique({ where: { id: providerId }, select: { status: true } });
+      if (!chosen) throw badRequest("The selected model is not registered");
+      if (chosen.status !== "active") throw badRequest("The selected model is disabled");
+      preferredProviderId = providerId;
+    }
 
     const sent = await prisma.ai_messages.count({
       where: { conversation_id: req.params.id, sender_type: "customer" },
@@ -125,6 +143,7 @@ router.post(
           { userIds: [user.id] },
           { type: "usage", conversationId: req.params.id, ...usage },
         ),
+      preferredProviderId,
     );
 
     const assistantRow = (await prisma.ai_messages.create({
@@ -222,6 +241,65 @@ router.post(
       openRequestCount: requestInputs.length,
       escalation,
     });
+  }),
+);
+
+/**
+ * Any signed-in user (customers included): reads an uploaded PDF/text file and
+ * has the model summarise it. Nothing is stored — the file is read from memory
+ * and discarded. Adding a document to the knowledge base stays staff-only
+ * (POST /admin/knowledge), and so does choosing the model.
+ */
+router.post(
+  "/summarize-document",
+  summaryUpload.single("file"),
+  asyncRoute(async (req: Request, res: Response) => {
+    const file = req.file;
+    if (!file) throw badRequest("A file is required");
+    if (!isIndexable(resolveMimeType(file.mimetype, file.originalname), file.originalname)) {
+      throw badRequest("Only PDF, Word (.docx) and plain-text files can be summarised");
+    }
+
+    const { providerId } = req.body as { providerId?: string };
+    let preferredProviderId: string | undefined;
+    if (providerId?.trim() && isStaffRole(req.user!.role)) {
+      const chosen = await prisma.agent_providers.findUnique({ where: { id: providerId }, select: { status: true } });
+      if (!chosen) throw badRequest("The selected model is not registered");
+      if (chosen.status !== "active") throw badRequest("The selected model is disabled");
+      preferredProviderId = providerId;
+    }
+
+    const pages = await extractPages(file.buffer, resolveMimeType(file.mimetype, file.originalname), file.originalname);
+    if (pages.length === 0) throw badRequest("No readable text was found in that file");
+    const full = pages.map((p) => `[Page ${p.page}]\n${p.text.trim()}`).join("\n\n");
+    const truncated = full.length > SUMMARY_MAX_CHARS;
+
+    try {
+      const result = await completeWithFallback(
+        [
+          {
+            role: "system",
+            content:
+              "You summarise documents for a customer-support team. Give a short overview, then the key points as bullets, then any deadlines, amounts or required actions. Use only what the document says and cite page numbers like (p. 3) where useful.",
+          },
+          { role: "user", content: `Summarise this document (${file.originalname}):\n\n${full.slice(0, SUMMARY_MAX_CHARS)}` },
+        ],
+        undefined,
+        [],
+        preferredProviderId,
+      );
+      res.json({
+        summary: result.content ?? "",
+        fileName: file.originalname,
+        pages: pages.length,
+        truncated,
+        model: result.model,
+        provider: result.providerName,
+      });
+    } catch (err) {
+      if (err instanceof GatewayUnavailableError) throw new HttpError(503, err.message);
+      throw err;
+    }
   }),
 );
 

@@ -96,6 +96,8 @@ export async function runReActLoop(
   onUsage?: (usage: { inputTokens: number; outputTokens: number }) => void,
   /** When set, the retrieved knowledge is not in `systemPrompt`; this agent hands it to sub-agents instead. */
   delegation?: { knowledgeContext: string },
+  /** An admin-selected agent_providers id: tried first on every model call, the others stay as fallback. */
+  preferredProviderId?: string,
 ): Promise<ReActResult> {
   const messages: LlmMessage[] = [
     { role: "system", content: systemPrompt },
@@ -120,7 +122,7 @@ export async function runReActLoop(
     let result: GatewayResult;
     const modelStart = Date.now();
     try {
-      result = await completeWithFallback(messages, tools, [...excludedProviderIds]);
+      result = await completeWithFallback(messages, tools, [...excludedProviderIds], preferredProviderId);
     } catch (err) {
       traceEvents.push({
         kind: "model_call",
@@ -188,6 +190,7 @@ export async function runReActLoop(
               knowledgeContext: delegation.knowledgeContext,
               activeTools,
               excludedProviderIds: [...excludedProviderIds],
+              preferredProviderId,
               onUsage,
             }).catch((err): SubAgentRun => ({
               agent: String(call.arguments.agent ?? "unknown"),

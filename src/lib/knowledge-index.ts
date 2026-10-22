@@ -5,6 +5,7 @@
 // page into short passages (knowledge_chunks), each remembering its page, so
 // the agent can answer from the relevant passage and point at the page
 // instead of dumping the whole document.
+import mammoth from "mammoth";
 import { extractText, getDocumentProxy } from "unpdf";
 import { prisma } from "./prisma.js";
 import { downloadKnowledgeFile } from "./knowledge-storage.js";
@@ -31,9 +32,13 @@ function isPlainText(mimeType: string | null | undefined, name = ""): boolean {
   return Boolean(mimeType?.startsWith("text/")) || /\.(txt|md|markdown|csv)$/i.test(name);
 }
 
-/** Whether we can pull text out of this kind of file (PDFs and plain text). */
+export function isDocx(mimeType: string | null | undefined, name = ""): boolean {
+  return mimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" || /\.docx$/i.test(name);
+}
+
+/** Whether we can pull text out of this kind of file (PDFs, Word .docx and plain text). */
 export function isIndexable(mimeType: string | null | undefined, name = ""): boolean {
-  return isPdf(mimeType, name) || isPlainText(mimeType, name);
+  return isPdf(mimeType, name) || isDocx(mimeType, name) || isPlainText(mimeType, name);
 }
 
 /** Per-page text for a PDF; plain text is paged on form feeds / ~3000-character blocks. */
@@ -42,6 +47,14 @@ export async function extractPages(buffer: Buffer, mimeType: string | null, name
     const pdf = await getDocumentProxy(new Uint8Array(buffer));
     const { text } = await extractText(pdf, { mergePages: false });
     return text.map((t, i) => ({ page: i + 1, text: t })).filter((p) => p.text.trim().length > 0);
+  }
+
+  if (isDocx(mimeType, name)) {
+    // Word has no fixed pages, so page like plain text: ~3000-character blocks.
+    const { value } = await mammoth.extractRawText({ buffer });
+    return splitEvery(value, 3000)
+      .map((t, i) => ({ page: i + 1, text: t }))
+      .filter((p) => p.text.trim().length > 0);
   }
 
   if (isPlainText(mimeType, name)) {
