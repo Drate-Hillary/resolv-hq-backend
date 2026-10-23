@@ -63,7 +63,7 @@ export class AnthropicClient implements LlmClient {
   private readonly model: string;
 
   constructor(apiKey: string, model: string | null) {
-    this.client = new Anthropic({ apiKey });
+    this.client = new Anthropic({ apiKey, maxRetries: 0, timeout: 45_000 });
     this.model = model ?? DEFAULT_MODEL;
   }
 

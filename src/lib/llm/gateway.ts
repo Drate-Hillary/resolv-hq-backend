@@ -18,7 +18,7 @@ import { AnthropicClient } from "./providers/anthropic.js";
 import { GoogleClient } from "./providers/google.js";
 import { LangChainClient } from "./providers/langchain.js";
 import { OpenAiClient } from "./providers/openai.js";
-import { withRetry } from "./retry.js";
+import { isExhaustedError, withRetry } from "./retry.js";
 import type { LlmClient, LlmMessage, LlmToolCall, LlmToolDefinition, LlmUsage } from "./types.js";
 
 export interface ProviderHandoff {
@@ -59,6 +59,27 @@ export interface GatewayResult {
 }
 
 const CACHE_TTL_SECONDS = 600;
+
+/**
+ * Providers that just failed are skipped for a while, so a provider that is out of credit or
+ * rate limited does not cost every message another round of failed calls and backoff. An empty
+ * balance or bad key is parked for 10 minutes, any other failure for 30 seconds. If every
+ * provider is parked they are all tried anyway, and a provider the user picked is always tried.
+ */
+const PARK_EXHAUSTED_MS = 10 * 60 * 1000;
+const PARK_OTHER_MS = 30 * 1000;
+const parkedUntil = new Map<string, number>();
+
+function parkProvider(id: string, err: unknown): void {
+  const status = (err as { status?: number } | null)?.status;
+  const longLived = isExhaustedError(err) || status === 401 || status === 403;
+  parkedUntil.set(id, Date.now() + (longLived ? PARK_EXHAUSTED_MS : PARK_OTHER_MS));
+}
+
+/** Test seam only. */
+export function clearParkedProvidersForTests(): void {
+  parkedUntil.clear();
+}
 
 function cacheKey(messages: LlmMessage[], tools?: LlmToolDefinition[], preferredProviderId?: string): string {
   const hash = createHash("sha256").update(JSON.stringify({ messages, tools, preferredProviderId })).digest("hex");
@@ -127,9 +148,12 @@ export async function completeWithFallback(
     orderBy: { created_at: "asc" },
   });
   const excludedIds = new Set(excludedProviderIds);
-  const providers = registeredProviders
-    .filter((provider) => !excludedIds.has(provider.id))
-    .sort((a, b) => Number(b.id === preferredProviderId) - Number(a.id === preferredProviderId));
+  const candidates = registeredProviders.filter((provider) => !excludedIds.has(provider.id));
+  const now = Date.now();
+  const healthy = candidates.filter((p) => p.id === preferredProviderId || (parkedUntil.get(p.id) ?? 0) <= now);
+  const providers = (healthy.length > 0 ? healthy : candidates).sort(
+    (a, b) => Number(b.id === preferredProviderId) - Number(a.id === preferredProviderId),
+  );
   if (providers.length === 0) {
     const message = registeredProviders.length === 0
       ? "No active model providers registered"
@@ -153,6 +177,7 @@ export async function completeWithFallback(
     }
     try {
       const completion = await withRetry(() => client.complete(messages, tools));
+      parkedUntil.delete(row.id);
       attempts.push(row.name);
       const result: GatewayResult = {
         ...completion,
@@ -177,6 +202,7 @@ export async function completeWithFallback(
 
       return result;
     } catch (err) {
+      parkProvider(row.id, err);
       failures.push(`${row.name}: ${err instanceof Error ? err.message : String(err)}`);
       attempts.push(row.name);
       failedProviderIds.push(row.id);

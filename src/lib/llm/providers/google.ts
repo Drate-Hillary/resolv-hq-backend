@@ -87,6 +87,8 @@ function toGeminiTools(tools: LlmToolDefinition[]) {
   ];
 }
 
+const REQUEST_TIMEOUT_MS = 45_000;
+
 export class GoogleClient implements LlmClient {
   private readonly model: string;
 
@@ -111,6 +113,8 @@ export class GoogleClient implements LlmClient {
         // it needs more headroom than the other providers' 600.
         generationConfig: { maxOutputTokens: 2048 },
       }),
+      // fetch has no timeout of its own and waits about 5 minutes for a stalled connection.
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
 
     if (!res.ok) {
