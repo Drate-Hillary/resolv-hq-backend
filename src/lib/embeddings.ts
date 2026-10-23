@@ -22,7 +22,7 @@ async function embeddingClient(): Promise<OpenAI | null> {
     select: { api_key: true },
     orderBy: { created_at: "asc" },
   });
-  return row ? new OpenAI({ apiKey: row.api_key }) : null;
+  return row ? new OpenAI({ apiKey: row.api_key, maxRetries: 0, timeout: 8_000 }) : null;
 }
 
 async function embedTexts(client: OpenAI, texts: string[]): Promise<number[][]> {
@@ -85,16 +85,25 @@ export async function semanticSearch(query: string): Promise<{ chunkId: string; 
  * Never throws: any failure (no key, rate limit, column not migrated yet)
  * just returns the passages untouched, i.e. keyword-only retrieval.
  */
+/** After a failure (no credit, rate limit, outage) semantic search is skipped for a few minutes instead of failing on every question. */
+let semanticPausedUntil = 0;
+const SEMANTIC_PAUSE_MS = 5 * 60 * 1000;
+
 export async function attachSemanticScores<T extends { chunkId?: string; semanticScore?: number }>(
   query: string,
   passages: T[],
 ): Promise<T[]> {
+  if (Date.now() < semanticPausedUntil) return passages;
   try {
     const hits = new Map((await semanticSearch(query)).map((h) => [h.chunkId, h.score]));
     if (hits.size === 0) return passages;
     return passages.map((p) => (p.chunkId && hits.has(p.chunkId) ? { ...p, semanticScore: hits.get(p.chunkId) } : p));
   } catch (err) {
-    console.error("Semantic search failed, using keyword retrieval only:", err);
+    semanticPausedUntil = Date.now() + SEMANTIC_PAUSE_MS;
+    console.error(
+      "Semantic search failed, using keyword retrieval only for 5 minutes:",
+      err instanceof Error ? err.message : err,
+    );
     return passages;
   }
 }

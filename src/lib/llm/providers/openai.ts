@@ -38,7 +38,7 @@ export class OpenAiClient implements LlmClient {
   private readonly model: string;
 
   constructor(apiKey: string, model: string | null) {
-    this.client = new OpenAI({ apiKey });
+    this.client = new OpenAI({ apiKey, maxRetries: 0, timeout: 45_000 });
     this.model = model ?? DEFAULT_MODEL;
   }
 
