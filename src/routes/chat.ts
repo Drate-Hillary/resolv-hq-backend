@@ -90,6 +90,22 @@ router.get(
  * real answerQuestion logic for every caller, including the internal staff
  * demo chat.
  */
+/**
+ * The models a user can choose between: active registered providers, by name
+ * only. Never includes the API key or anything else about the account.
+ */
+router.get(
+  "/models",
+  asyncRoute(async (_req: Request, res: Response) => {
+    const rows = await prisma.agent_providers.findMany({
+      where: { status: "active" },
+      select: { id: true, name: true, provider: true, model: true },
+      orderBy: { created_at: "asc" },
+    });
+    res.json(rows);
+  }),
+);
+
 router.post(
   "/conversations/:id/messages",
   asyncRoute(async (req: Request, res: Response) => {
@@ -98,9 +114,9 @@ router.post(
     const { content, providerId } = req.body as { content?: string; providerId?: string };
     if (!content) throw badRequest("content is required");
 
-    // Only staff may pick the model; for anyone else the field is ignored.
+    // Any signed-in user may pick one of the active models (see GET /chat/models).
     let preferredProviderId: string | undefined;
-    if (providerId && isStaffRole(user.role)) {
+    if (providerId) {
       const chosen = await prisma.agent_providers.findUnique({ where: { id: providerId }, select: { status: true } });
       if (!chosen) throw badRequest("The selected model is not registered");
       if (chosen.status !== "active") throw badRequest("The selected model is disabled");
@@ -248,7 +264,7 @@ router.post(
  * Any signed-in user (customers included): reads an uploaded PDF/text file and
  * has the model summarise it. Nothing is stored — the file is read from memory
  * and discarded. Adding a document to the knowledge base stays staff-only
- * (POST /admin/knowledge), and so does choosing the model.
+ * (POST /admin/knowledge).
  */
 router.post(
   "/summarize-document",
@@ -262,7 +278,7 @@ router.post(
 
     const { providerId } = req.body as { providerId?: string };
     let preferredProviderId: string | undefined;
-    if (providerId?.trim() && isStaffRole(req.user!.role)) {
+    if (providerId?.trim()) {
       const chosen = await prisma.agent_providers.findUnique({ where: { id: providerId }, select: { status: true } });
       if (!chosen) throw badRequest("The selected model is not registered");
       if (chosen.status !== "active") throw badRequest("The selected model is disabled");
