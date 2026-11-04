@@ -7,7 +7,7 @@ import { resolveMimeType } from "../../lib/attachment-storage.js";
 import { badRequest, notFound } from "../../lib/errors.js";
 import { deleteKnowledgeFile, getKnowledgeFileSignedUrl, uploadKnowledgeFile } from "../../lib/knowledge-storage.js";
 import { embedDocumentChunks } from "../../lib/embeddings.js";
-import { extractPages, indexPages, isIndexable, reindexDocument } from "../../lib/knowledge-index.js";
+import { extractPages, indexPages, invalidatePublishedPassagesCache, isIndexable, reindexDocument } from "../../lib/knowledge-index.js";
 import { isNotFound } from "../../lib/prisma-errors.js";
 import { prisma } from "../../lib/prisma.js";
 import { asyncRoute } from "../../middleware/error-handler.js";
@@ -77,6 +77,7 @@ router.post(
     const data = await prisma.knowledge_documents.create({
       data: { title, content, file_url, file_type, status, category_id, uploaded_by: req.user!.id },
     });
+    await invalidatePublishedPassagesCache();
 
     // Make the document readable by the agent: split it page by page into
     // searchable passages. A failure here must not fail the upload — the file
@@ -95,6 +96,7 @@ router.post(
     setTimeout(() => {
       prisma.knowledge_documents
         .update({ where: { id: data.id }, data: { status: "published" } })
+        .then(invalidatePublishedPassagesCache)
         .catch((updateError) => console.error("knowledge indexing update failed:", updateError));
     }, 1800);
   }),
@@ -130,6 +132,7 @@ router.patch(
       throw err;
     }
 
+    await invalidatePublishedPassagesCache();
     res.json(data);
   }),
 );
@@ -182,6 +185,7 @@ router.delete(
 
     await prisma.knowledge_chunks.deleteMany({ where: { document_id: req.params.id } });
     await prisma.knowledge_documents.deleteMany({ where: { id: req.params.id } });
+    await invalidatePublishedPassagesCache();
 
     if (data.file_url) {
       await deleteKnowledgeFile(data.file_url).catch((err) => console.error("knowledge file delete failed:", err));

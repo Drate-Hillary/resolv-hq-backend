@@ -2,16 +2,17 @@
 // every route that needs to filter or display a request's status now
 // resolves it through request_statuses first.
 import { prisma } from "./prisma.js";
+import { getOrLoadRedisCache } from "./redis-cache.js";
 import type { RequestStatusRow } from "../types/database.types.js";
 
-let cache: RequestStatusRow[] | null = null;
+const REQUEST_STATUSES_CACHE_KEY = "db-cache:request-statuses:v1";
+const REQUEST_STATUSES_CACHE_TTL_SECONDS = 3600;
 
-/** All request_statuses rows, ordered by workflow sequence. Cached for the
- * life of the process — this table is effectively static reference data. */
+/** All request_statuses rows, shared through Redis as static reference data. */
 export async function loadStatuses(): Promise<RequestStatusRow[]> {
-  if (cache) return cache;
-  cache = (await prisma.request_statuses.findMany({ orderBy: { sequence: "asc" } })) as RequestStatusRow[];
-  return cache;
+  return getOrLoadRedisCache(REQUEST_STATUSES_CACHE_KEY, REQUEST_STATUSES_CACHE_TTL_SECONDS, async () =>
+    (await prisma.request_statuses.findMany({ orderBy: { sequence: "asc" } })) as RequestStatusRow[],
+  );
 }
 
 export async function statusIdByName(name: string): Promise<string | null> {

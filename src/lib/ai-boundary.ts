@@ -10,6 +10,7 @@
 // routes/admin/boundary-rules.ts for the CRUD that manages it), so adding,
 // retiring, or tuning a rule never requires a code change or a redeploy.
 import { prisma } from "./prisma.js";
+import { getOrLoadRedisCache, invalidateRedisCache } from "./redis-cache.js";
 
 export interface BoundaryViolation {
   category: string;
@@ -23,26 +24,26 @@ interface CompiledRule {
   fallbackMessage: string;
 }
 
-let cache: { rules: CompiledRule[]; expiresAt: number } | null = null;
-const CACHE_TTL_MS = 60_000;
+const BOUNDARY_RULES_CACHE_KEY = "db-cache:guardrails:boundary-rules:v1";
+const CACHE_TTL_SECONDS = 60;
 
 /** Called by routes/admin/boundary-rules.ts after any create/update/delete
  * so a change takes effect on the next message instead of waiting out the
  * cache TTL. */
-export function invalidateBoundaryRulesCache(): void {
-  cache = null;
+export async function invalidateBoundaryRulesCache(): Promise<void> {
+  await invalidateRedisCache(BOUNDARY_RULES_CACHE_KEY);
 }
 
 async function loadCompiledRules(): Promise<CompiledRule[]> {
-  if (cache && cache.expiresAt > Date.now()) return cache.rules;
-
-  const data = await prisma.boundary_rules.findMany({
-    where: { is_active: true },
-    orderBy: { created_at: "asc" },
-  });
+  const rows = await getOrLoadRedisCache(BOUNDARY_RULES_CACHE_KEY, CACHE_TTL_SECONDS, () =>
+    prisma.boundary_rules.findMany({
+      where: { is_active: true },
+      orderBy: { created_at: "asc" },
+    }),
+  );
 
   const rules: CompiledRule[] = [];
-  for (const row of data) {
+  for (const row of rows) {
     try {
       rules.push({ category: row.category, regex: new RegExp(row.pattern, "i"), fallbackMessage: row.fallback_message });
     } catch (err) {
@@ -50,7 +51,6 @@ async function loadCompiledRules(): Promise<CompiledRule[]> {
     }
   }
 
-  cache = { rules, expiresAt: Date.now() + CACHE_TTL_MS };
   return rules;
 }
 

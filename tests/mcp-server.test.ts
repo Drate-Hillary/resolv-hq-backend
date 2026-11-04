@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createMcpServer, type McpServerDeps } from "../src/lib/mcp-server.js";
 import { connectMcpAgentTools } from "../src/lib/mcp-agent-tools.js";
+import { redis } from "../src/lib/redis.js";
 
 const ALL = ["search_knowledge_base", "account_status_lookup", "outage_status_checker", "get_my_tickets", "draft_escalation_ticket"];
+
+after(() => {
+  redis.disconnect();
+});
 
 function makeDeps(over: Partial<McpServerDeps> & { active?: Set<string> } = {}): McpServerDeps {
   const state = { active: over.active ?? new Set(ALL) };

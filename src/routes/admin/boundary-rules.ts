@@ -57,7 +57,7 @@ router.post(
 
     const data = await prisma.boundary_rules.create({ data: insert });
 
-    invalidateBoundaryRulesCache();
+    await invalidateBoundaryRulesCache();
     res.status(201).json(data);
   }),
 );
@@ -98,7 +98,7 @@ router.patch(
       throw err;
     }
 
-    invalidateBoundaryRulesCache();
+    await invalidateBoundaryRulesCache();
     res.json(data);
   }),
 );
@@ -108,7 +108,7 @@ router.delete(
   asyncRoute(async (req: Request, res: Response) => {
     await prisma.boundary_rules.deleteMany({ where: { id: req.params.id } });
 
-    invalidateBoundaryRulesCache();
+    await invalidateBoundaryRulesCache();
     res.status(204).end();
   }),
 );

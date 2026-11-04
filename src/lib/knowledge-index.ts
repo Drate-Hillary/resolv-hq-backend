@@ -9,8 +9,16 @@ import mammoth from "mammoth";
 import { extractText, getDocumentProxy } from "unpdf";
 import { prisma } from "./prisma.js";
 import { downloadKnowledgeFile } from "./knowledge-storage.js";
+import { getOrLoadRedisCache, invalidateRedisCache } from "./redis-cache.js";
 
 import { embedDocumentChunks } from "./embeddings.js";
+
+const PUBLISHED_PASSAGES_CACHE_KEY = "db-cache:knowledge:published-passages:v1";
+const PUBLISHED_PASSAGES_CACHE_TTL_SECONDS = 300;
+
+export async function invalidatePublishedPassagesCache(): Promise<void> {
+  await invalidateRedisCache(PUBLISHED_PASSAGES_CACHE_KEY);
+}
 
 // Tunable without a deploy: smaller chunks retrieve more precisely, larger
 // ones keep more surrounding context per passage.
@@ -177,6 +185,7 @@ export async function indexPages(documentId: string, pages: PageText[]): Promise
     prisma.knowledge_chunks.deleteMany({ where: { document_id: documentId } }),
     prisma.knowledge_chunks.createMany({ data: rows }),
   ]);
+  await invalidatePublishedPassagesCache();
 
   // Embeddings power semantic retrieval but are optional: with no OpenAI
   // provider registered (or a failed call) the passages still work through
@@ -228,33 +237,35 @@ export interface KnowledgePassage {
  * falls back to being chunked on the fly, so nothing published is invisible.
  */
 export async function loadPublishedPassages(): Promise<KnowledgePassage[]> {
-  const docs = await prisma.knowledge_documents.findMany({
-    where: { status: "published" },
-    select: {
-      id: true,
-      title: true,
-      content: true,
-      knowledge_chunks: { select: { id: true, content: true, metadata: true }, orderBy: { chunk_index: "asc" } },
-    },
-  });
+  return getOrLoadRedisCache(PUBLISHED_PASSAGES_CACHE_KEY, PUBLISHED_PASSAGES_CACHE_TTL_SECONDS, async () => {
+    const docs = await prisma.knowledge_documents.findMany({
+      where: { status: "published" },
+      select: {
+        id: true,
+        title: true,
+        content: true,
+        knowledge_chunks: { select: { id: true, content: true, metadata: true }, orderBy: { chunk_index: "asc" } },
+      },
+    });
 
-  const passages: KnowledgePassage[] = [];
-  for (const doc of docs) {
-    if (doc.knowledge_chunks.length > 0) {
-      for (const chunk of doc.knowledge_chunks) {
-        const meta = chunk.metadata as { page?: number; heading?: string } | null;
-        passages.push({
-          id: doc.id,
-          title: doc.title,
-          content: chunk.content,
-          page: meta?.page,
-          heading: meta?.heading,
-          chunkId: chunk.id,
-        });
+    const passages: KnowledgePassage[] = [];
+    for (const doc of docs) {
+      if (doc.knowledge_chunks.length > 0) {
+        for (const chunk of doc.knowledge_chunks) {
+          const meta = chunk.metadata as { page?: number; heading?: string } | null;
+          passages.push({
+            id: doc.id,
+            title: doc.title,
+            content: chunk.content,
+            page: meta?.page,
+            heading: meta?.heading,
+            chunkId: chunk.id,
+          });
+        }
+      } else if (doc.content) {
+        for (const content of chunkPage(doc.content)) passages.push({ id: doc.id, title: doc.title, content });
       }
-    } else if (doc.content) {
-      for (const content of chunkPage(doc.content)) passages.push({ id: doc.id, title: doc.title, content });
     }
-  }
-  return passages;
+    return passages;
+  });
 }
