@@ -1,15 +1,13 @@
 # yaml-language-server: $schema=
 #
-# Single entry point for the whole system: the backend API, Redis, and the
-# admin console (../resolv-hq, a Vite + React SPA, port 3000) and the customer
-# web app (../resolv-hq-customer, an Expo web build, port 8083), plus an nginx
-# reverse proxy for the admin app. Each frontend owns its Dockerfile (Docker
-# needs it next to that app's source to build); only the orchestration layer
-# lives here.
+# Local container stack: the backend API, Redis, RabbitMQ, admin console
+# (../resolv-hq), and an nginx reverse proxy for the admin app. The customer
+# app (../resolv-hq-customer) runs separately with Expo and is not containerized.
 #
-# Every service is `restart: unless-stopped`, so the stack keeps running (and
-# comes back after a Docker/PC restart) without `npm run dev` in either repo.
-# It only changes when you rebuild, from this directory:
+# Every containerized service is `restart: unless-stopped`, so the stack keeps
+# running after a Docker/PC restart without `npm run dev` in the backend or
+# admin app. Start the customer app separately with Expo when needed.
+# The containerized services only change when you rebuild from this directory:
 #   docker compose build && docker compose up -d
 #
 # `docker compose up` from this directory reads .env in THIS directory for
@@ -70,22 +68,6 @@ services:
     ports:
       # The admin console, served directly on host port 3000.
       - "3000:3000"
-    restart: unless-stopped
-
-  customer-web:
-    build:
-      context: ../resolv-hq-customer
-      dockerfile: Dockerfile
-      args:
-        EXPO_PUBLIC_SUPABASE_URL: ${VITE_SUPABASE_URL:-${NEXT_PUBLIC_SUPABASE_URL}}
-        EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${VITE_SUPABASE_PUBLISHABLE_KEY:-${NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY}}
-        # Baked into the browser bundle — must be host-reachable.
-        EXPO_PUBLIC_API_BASE_URL: ${ADMIN_PUBLIC_API_BASE_URL:-http://localhost:3001}
-    depends_on:
-      - backend
-    ports:
-      # The customer web app, on host port 8083 (8081 is left free for Expo/Metro).
-      - "8083:80"
     restart: unless-stopped
 
   admin-nginx:

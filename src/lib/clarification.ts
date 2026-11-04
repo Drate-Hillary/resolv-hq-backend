@@ -11,6 +11,7 @@
 // table, see routes/admin/clarification-triggers.ts), not hardcoded in the
 // app — same pattern as lib/ai-boundary.ts.
 import { prisma } from "./prisma.js";
+import { getOrLoadRedisCache, invalidateRedisCache } from "./redis-cache.js";
 
 export interface ClarificationResult {
   question: string;
@@ -32,8 +33,8 @@ interface CompiledRules {
   fallback: CompiledFallback | null;
 }
 
-let cache: (CompiledRules & { expiresAt: number }) | null = null;
-const CACHE_TTL_MS = 60_000;
+const CLARIFICATION_TRIGGERS_CACHE_KEY = "db-cache:guardrails:clarification-triggers:v1";
+const CACHE_TTL_SECONDS = 60;
 
 /** A query shorter than this, with no knowledge-base signal at all, almost
  * never carries enough detail to route confidently — this is the one
@@ -47,17 +48,17 @@ const MIN_MEANINGFUL_WORDS = 6;
 
 /** Called by routes/admin/clarification-triggers.ts after any
  * create/update/delete so a change takes effect on the next message. */
-export function invalidateClarificationCache(): void {
-  cache = null;
+export async function invalidateClarificationCache(): Promise<void> {
+  await invalidateRedisCache(CLARIFICATION_TRIGGERS_CACHE_KEY);
 }
 
 async function loadCompiled(): Promise<CompiledRules> {
-  if (cache && cache.expiresAt > Date.now()) return cache;
-
-  const rows = await prisma.clarification_triggers.findMany({
-    where: { is_active: true },
-    orderBy: { created_at: "asc" },
-  });
+  const rows = await getOrLoadRedisCache(CLARIFICATION_TRIGGERS_CACHE_KEY, CACHE_TTL_SECONDS, () =>
+    prisma.clarification_triggers.findMany({
+      where: { is_active: true },
+      orderBy: { created_at: "asc" },
+    }),
+  );
 
   const triggers: CompiledTrigger[] = [];
   let fallback: CompiledFallback | null = null;
@@ -75,8 +76,7 @@ async function loadCompiled(): Promise<CompiledRules> {
     }
   }
 
-  cache = { triggers, fallback, expiresAt: Date.now() + CACHE_TTL_MS };
-  return cache;
+  return { triggers, fallback };
 }
 
 /**
