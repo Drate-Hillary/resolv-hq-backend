@@ -55,7 +55,7 @@ router.post(
 
     const data = await prisma.clarification_triggers.create({ data: insert });
 
-    invalidateClarificationCache();
+    await invalidateClarificationCache();
     res.status(201).json(data);
   }),
 );
@@ -91,7 +91,7 @@ router.patch(
       throw err;
     }
 
-    invalidateClarificationCache();
+    await invalidateClarificationCache();
     res.json(data);
   }),
 );
@@ -101,7 +101,7 @@ router.delete(
   asyncRoute(async (req: Request, res: Response) => {
     await prisma.clarification_triggers.deleteMany({ where: { id: req.params.id } });
 
-    invalidateClarificationCache();
+    await invalidateClarificationCache();
     res.status(204).end();
   }),
 );

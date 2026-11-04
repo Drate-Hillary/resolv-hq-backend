@@ -984,6 +984,7 @@ model requests {
   priority                                      String?                  @default("medium")
   source                                        String?                  @default("mobile")
   ai_handled                                    Boolean                  @default(false)
+  response_mode                                 String                   @default("human")
   created_at                                    DateTime?                @default(now()) @db.Timestamptz(6)
   updated_at                                    DateTime?                @default(now()) @db.Timestamptz(6)
   resolved_at                                   DateTime?                @db.Timestamptz(6)

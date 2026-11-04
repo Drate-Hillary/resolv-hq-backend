@@ -89,6 +89,7 @@ export function mapRequestRow(
     resolvedAt: row.resolved_at,
     closedAt: row.closed_at,
     aiHandled: row.ai_handled,
+    responseMode: row.response_mode,
     messages: [],
     timeline: buildTimeline([], row.created_at, new Map()),
     customerId: row.customer_id,
@@ -103,7 +104,14 @@ export function mapRequestRow(
 export function mapMessageRow(row: RequestMessageRow): RequestMessage {
   return {
     id: row.id,
-    sender: row.sender_type,
+    sender:
+      row.sender_type === "customer"
+        ? "customer"
+        : row.sender_type === "assistant"
+          ? "ai"
+          : row.sender_type === "system"
+            ? "system"
+            : "support",
     text: row.message,
     timestamp: row.created_at,
   };

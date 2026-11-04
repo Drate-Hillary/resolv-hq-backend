@@ -15,7 +15,7 @@ Pushing to the branch deploys. Pull requests only run checks.
 1. Render dashboard > New > Blueprint, pick this repo. `render.yaml` creates `resolv-hq-backend` (branch `main`) and `resolv-hq-backend-staging` (branch `Dev`).
 2. Fill in the `sync: false` values on each service (names are in `.env.example`):
    `DATABASE_URL`, `DIRECT_URL`, `ALLOWED_ORIGINS`, `REDIS_URL`, `RABBITMQ_URL`, `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SECRET_KEY`, `SUPABASE_JWKS_URL`.
-3. Redis is optional (rate limiting and caching fail open); create a Render Key Value instance and use its internal URL if you want it. RabbitMQ is optional too, but the `localhost` default will not work on Render, so leave it unset or point it at a hosted broker.
+3. Redis is optional; create a Render Key Value instance and use its internal URL to enable rate limiting, LLM response caching, and shared database read caches for published knowledge, request statuses, and AI guardrail configuration. If unavailable, those reads fall back to Postgres. RabbitMQ is optional too, but the `localhost` default will not work on Render, so leave it unset or point it at a hosted broker.
 
 `DIRECT_URL` must be the non-pooled connection: the start command (`prisma migrate deploy`) needs it.
 `ALLOWED_ORIGINS` must list the real frontend origins or the browser blocks every API call.
@@ -41,7 +41,7 @@ Add each frontend origin under Authentication > URL Configuration (site URL and 
 
 ## Local / self-hosted stack
 
-`docker compose build && docker compose up -d` in this directory runs the backend, Redis, RabbitMQ, the admin app and the customer web app. See the header of `docker-compose.yml`.
+`docker compose build && docker compose up -d` in this directory runs the backend, Redis, RabbitMQ, and the admin app. Run the customer app separately with Expo; it is not included in the Docker Compose stack. See the header of `docker-compose.yml`.
 
 ## Rollback
 

@@ -16,6 +16,7 @@ export type Json =
 export type UserRole = "customer" | "admin" | "agent";
 export type ProfileStatus = "active" | "suspended" | "inactive";
 export type RequestPriority = "low" | "medium" | "high" | "urgent";
+export type RequestResponseMode = "human" | "ai";
 export type MessageSenderType = "customer" | "admin" | "agent" | "assistant" | "system";
 export type AiSenderType = "customer" | "assistant" | "system";
 export type KnowledgeStatus = "draft" | "published" | "archived";
@@ -129,6 +130,7 @@ export interface Database {
           priority: RequestPriority;
           source: string;
           ai_handled: boolean;
+          response_mode: RequestResponseMode;
           created_at: string;
           updated_at: string;
           resolved_at: string | null;
@@ -146,6 +148,7 @@ export interface Database {
           priority?: RequestPriority;
           source?: string;
           ai_handled?: boolean;
+          response_mode?: RequestResponseMode;
           created_at?: string;
           updated_at?: string;
           resolved_at?: string | null;

@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createMcpServer, type McpServerDeps } from "../src/lib/mcp-server.js";
+import { connectMcpAgentTools } from "../src/lib/mcp-agent-tools.js";
+import { redis } from "../src/lib/redis.js";
 
-const ALL = ["search_knowledge_base", "account_status_lookup", "outage_status_checker", "draft_escalation_ticket"];
+const ALL = ["search_knowledge_base", "account_status_lookup", "outage_status_checker", "get_my_tickets", "draft_escalation_ticket"];
+
+after(() => {
+  redis.disconnect();
+});
 
 function makeDeps(over: Partial<McpServerDeps> & { active?: Set<string> } = {}): McpServerDeps {
   const state = { active: over.active ?? new Set(ALL) };
@@ -25,7 +31,7 @@ async function connect(deps: McpServerDeps) {
   return { client, close: () => client.close() };
 }
 
-test("tools/list advertises the four active tools with read-only annotations", async () => {
+test("tools/list advertises active tools with read-only annotations", async () => {
   const { client, close } = await connect(makeDeps());
   const { tools } = await client.listTools();
   assert.deepEqual(tools.map((t) => t.name).sort(), [...ALL].sort());
@@ -70,7 +76,44 @@ test("no matches is a successful empty result", async () => {
   const out = await client.callTool({ name: "outage_status_checker", arguments: {} });
   assert.notEqual(out.isError, true);
   assert.deepEqual((out.structuredContent as { openIssues: unknown[] }).openIssues, []);
+  const tickets = await client.callTool({ name: "get_my_tickets", arguments: {} });
+  assert.notEqual(tickets.isError, true);
+  assert.deepEqual((tickets.structuredContent as { tickets: unknown[] }).tickets, []);
   await close();
+});
+
+test("get_my_tickets returns only the authenticated caller's loaded ticket scope", async () => {
+  const { client, close } = await connect(
+    makeDeps({
+      loadCallerRequests: async () => [
+        { id: "own", title: "Power issue", status: "submitted", ticketNumber: 104, priority: "high", createdAt: "2026-11-03" },
+      ] as never,
+    }),
+  );
+  const result = await client.callTool({ name: "get_my_tickets", arguments: { status: "open" } });
+  assert.notEqual(result.isError, true);
+  assert.deepEqual((result.structuredContent as { tickets: { ticketNumber: number }[] }).tickets.map((ticket) => ticket.ticketNumber), [104]);
+  await close();
+});
+
+test("the ticket agent discovers and invokes the authenticated MCP tools over MCP", async () => {
+  const server = await createMcpServer(
+    { id: "u1", role: "customer" } as never,
+    makeDeps({
+      loadCallerKnowledge: async () => [
+        { id: "kb1", title: "Power support", content: "Contact support during a power interruption." },
+      ] as never,
+    }),
+  );
+  const agentTools = await connectMcpAgentTools(server);
+  try {
+    const tools = await agentTools.listTools();
+    assert.ok(tools.some((tool) => tool.name === "search_knowledge_base"));
+    const result = await agentTools.callTool("search_knowledge_base", { query: "power interruption" });
+    assert.match(result, /Power support/);
+  } finally {
+    await agentTools.close();
+  }
 });
 
 test("loader failures become tool errors without structuredContent", async () => {
