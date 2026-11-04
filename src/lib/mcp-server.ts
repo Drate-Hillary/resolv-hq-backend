@@ -3,6 +3,7 @@ import { HttpError } from "./errors.js";
 import {
   accountStatusLookupResult,
   buildEscalationDraft,
+  getMyTicketsResult,
   outageStatusCheckerResult,
   searchKnowledgeBaseResult,
 } from "./agent-tools.js";
@@ -51,6 +52,27 @@ const tools = {
         z.object({
           title: z.string(),
           status: z.string(),
+        }).strict(),
+      ),
+      message: z.string(),
+    }).strict(),
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+  },
+  get_my_tickets: {
+    description:
+      "Fetch support tickets in the authenticated caller's permitted scope. Customers only see their own tickets.",
+    inputSchema: z.object({
+      status: z.enum(["open", "resolved", "all"]).optional(),
+      query: z.string().optional(),
+    }).strict(),
+    outputSchema: z.object({
+      tickets: z.array(
+        z.object({
+          ticketNumber: z.number().nullable(),
+          title: z.string(),
+          status: z.string(),
+          priority: z.string().nullable(),
+          createdAt: z.string().nullable(),
         }).strict(),
       ),
       message: z.string(),
@@ -166,6 +188,14 @@ export async function createMcpServer(
   if (active.has("outage_status_checker")) {
     server.registerTool("outage_status_checker", tools.outage_status_checker, guarded("outage_status_checker", async () => {
       const result = outageStatusCheckerResult(await deps.loadCallerRequests(await resolveUser()));
+      return { content: [{ type: "text" as const, text: asText(result) }], structuredContent: { ...result } };
+    }));
+  }
+
+  if (active.has("get_my_tickets")) {
+    server.registerTool("get_my_tickets", tools.get_my_tickets, guarded("get_my_tickets", async (args: { status?: "open" | "resolved" | "all"; query?: string }) => {
+      const requests = await deps.loadCallerRequests(await resolveUser());
+      const result = getMyTicketsResult(args, requests);
       return { content: [{ type: "text" as const, text: asText(result) }], structuredContent: { ...result } };
     }));
   }

@@ -1,6 +1,6 @@
 // App-facing response shapes (mirrors resolv-hq-customer/lib/types.ts), decoupled
 // from the DB row shapes in database.types.ts. Route handlers map rows to these.
-import type { MessageSenderType, UserRole } from "./database.types.js";
+import type { RequestResponseMode, UserRole } from "./database.types.js";
 
 /** Customer app uses "normal", the DB enum uses "medium" — mapped at the boundary. */
 export type AppRequestPriority = "low" | "normal" | "high" | "urgent";
@@ -25,7 +25,7 @@ export interface RequestAttachment {
 
 export interface RequestMessage {
   id: string;
-  sender: MessageSenderType;
+  sender: "customer" | "support" | "ai" | "system";
   text: string;
   timestamp: string;
   attachments?: RequestAttachment[];
@@ -50,6 +50,7 @@ export interface ServiceRequest {
   resolvedAt?: string | null;
   closedAt?: string | null;
   aiHandled: boolean;
+  responseMode: RequestResponseMode;
   messages: RequestMessage[];
   attachments?: RequestAttachment[];
   timeline: TimelineStep[];

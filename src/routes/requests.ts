@@ -1,8 +1,8 @@
-import { Router, type Request, type Response } from "express";
+import { Router, type Request, type RequestHandler, type Response } from "express";
 import multer from "multer";
-import { classifyRequest } from "../lib/ai.js";
+import { classifyRequest, generateAssistantReply, type AiAnswer } from "../lib/ai.js";
 import { requireRole } from "../lib/auth.js";
-import { badRequest, notFound } from "../lib/errors.js";
+import { badRequest, HttpError, notFound } from "../lib/errors.js";
 import {
   getAttachmentSignedUrl,
   isAllowedAttachmentType,
@@ -18,13 +18,43 @@ import { assertRequestAccess } from "../lib/ownership.js";
 import { isNotFound } from "../lib/prisma-errors.js";
 import { finalStatusIds, loadStatuses, statusIdByName } from "../lib/statuses.js";
 import { prisma } from "../lib/prisma.js";
+import { isStaffRole, loadCallerAccount, loadCallerKnowledge, loadCallerRequests } from "../lib/agent-tool-context.js";
+import { loadCustomerMemory } from "../lib/customer-memory.js";
+import { truncateAtBoundary } from "../lib/context-budget.js";
+import { createMcpAgentTools } from "../lib/mcp-agent-tools.js";
 import { asyncRoute } from "../middleware/error-handler.js";
+import { rateLimit } from "../middleware/rate-limit.js";
 import type { RequestAttachment, RequestCategoryOption } from "../types/api.js";
 import type { RequestMessageRow, RequestRow, RequestStatusHistoryRow } from "../types/database.types.js";
 
 const router = Router();
 
 const attachmentUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_ATTACHMENT_BYTES } });
+const aiTicketReplyRateLimit = rateLimit({
+  keyPrefix: "ticket-ai",
+  max: 20,
+  windowMs: 60 * 1000,
+});
+const limitAiTicketCreation: RequestHandler = (req, res, next) => {
+  if ((req.body as { responseMode?: string } | undefined)?.responseMode === "ai") {
+    void aiTicketReplyRateLimit(req, res, next);
+    return;
+  }
+  next();
+};
+const limitAiTicketMessages: RequestHandler = (req, res, next) => {
+  if (req.user?.role !== "customer") {
+    next();
+    return;
+  }
+  prisma.requests
+    .findUnique({ where: { id: req.params.id }, select: { response_mode: true } })
+    .then((ticket) => {
+      if (ticket?.response_mode === "ai") return aiTicketReplyRateLimit(req, res, next);
+      next();
+    })
+    .catch(next);
+};
 
 /** A request's attachments, newest last, each with a fresh short-lived signed URL. */
 async function loadAttachments(requestId: string): Promise<RequestAttachment[]> {
@@ -110,6 +140,94 @@ async function loadRequestDetail(id: string, user: { role: string }) {
   };
 }
 
+async function generateTicketAiReply(
+  requestId: string,
+  ticket: Pick<RequestRow, "ticket_number" | "title" | "description">,
+  user: Parameters<typeof loadCallerAccount>[0],
+  latestCustomerMessage: string,
+) {
+  const [knowledge, activeRequests, account, customerMemory, history] = await Promise.all([
+    loadCallerKnowledge(latestCustomerMessage),
+    loadCallerRequests(user),
+    loadCallerAccount(user),
+    loadCustomerMemory(user.id, user.role),
+    prisma.request_messages.findMany({
+      where: { request_id: requestId },
+      orderBy: { created_at: "desc" },
+      take: 12,
+      select: { sender_type: true, message: true },
+    }),
+  ]);
+  const transcript = truncateAtBoundary(
+    history
+      .reverse()
+      .filter((message) => message.message.trim().length > 0)
+      .map((message) => {
+        const speaker =
+          message.sender_type === "customer"
+            ? "Customer"
+            : message.sender_type === "assistant"
+              ? "AI assistant"
+              : "Support";
+        return `${speaker}: ${message.message}`;
+      })
+      .join("\n"),
+    4000,
+  );
+  const query = [
+    `Reply to the customer's latest message in support ticket #${ticket.ticket_number}.`,
+    `Ticket title: ${ticket.title}`,
+    `Original issue: ${truncateAtBoundary(ticket.description, 2000)}`,
+    "Recent conversation:",
+    transcript,
+    `Latest customer message: ${truncateAtBoundary(latestCustomerMessage, 4000)}`,
+    "Answer the latest message directly, using the earlier conversation only as context.",
+    "This is already an open support ticket; do not draft a second ticket.",
+  ].join("\n\n");
+  const mcpTools = await createMcpAgentTools(user);
+  let answer: AiAnswer;
+  try {
+    answer = await generateAssistantReply(
+      query,
+      knowledge,
+      activeRequests,
+      account,
+      isStaffRole(user.role),
+      customerMemory,
+      undefined,
+      undefined,
+      false,
+      mcpTools,
+    );
+  } finally {
+    await mcpTools.close();
+  }
+  const assistantRow = (await prisma.request_messages.create({
+    data: {
+      request_id: requestId,
+      sender_type: "assistant",
+      sender_id: null,
+      message: answer.text,
+    },
+  })) as unknown as RequestMessageRow;
+  const aiReply = mapMessageRow(assistantRow);
+
+  void publish(
+    { userIds: [user.id], staff: true },
+    { type: "message", requestId, message: aiReply },
+  );
+  await notifyUsers(
+    [user.id],
+    {
+      type: "ai",
+      title: "AI assistant replied",
+      message: answer.text.length > 120 ? `${answer.text.slice(0, 117)}…` : answer.text,
+      requestId,
+    },
+  );
+  return aiReply;
+}
+
 /**
  * Customer: only their own requests, newest first.
  * Staff (admin/agent): the open queue across every customer, oldest first —
@@ -171,10 +289,18 @@ router.get(
 router.post(
   "/",
   requireRole("customer"),
+  limitAiTicketCreation,
   asyncRoute(async (req: Request, res: Response) => {
     const userId = req.user!.id;
-    const { description, categoryId } = req.body as { description?: string; categoryId?: string | null };
+    const { description, categoryId, responseMode = "human" } = req.body as {
+      description?: string;
+      categoryId?: string | null;
+      responseMode?: string;
+    };
     if (!description) throw badRequest("description is required");
+    if (responseMode !== "human" && responseMode !== "ai") {
+      throw badRequest('responseMode must be "human" or "ai"');
+    }
 
     const [categories, submittedStatusId] = await Promise.all([loadCategories(), statusIdByName("submitted")]);
     const { category, priority } = classifyRequest(description);
@@ -189,24 +315,37 @@ router.post(
         description,
         priority: priorityToDb(priority),
         source: "mobile",
+        response_mode: responseMode,
       },
     })) as unknown as RequestRow;
 
     const messageRow = (await prisma.request_messages.create({
       data: { request_id: requestRow.id, sender_type: "customer", sender_id: userId, message: description },
     })) as unknown as RequestMessageRow;
+    let aiReply: ReturnType<typeof mapMessageRow> | undefined;
+    let aiError: string | undefined;
+    if (responseMode === "ai") {
+      try {
+        aiReply = await generateTicketAiReply(requestRow.id, requestRow, req.user!, description);
+      } catch (error) {
+        console.error(`AI ticket reply failed for request ${requestRow.id}:`, error);
+        aiError = "Your ticket was created, but the AI assistant couldn't reply. Switch to Human mode or try again later.";
+      }
+    }
 
     const categoryName = categories.find((c) => c.id === resolvedCategoryId)?.name ?? category;
 
-    await notifyStaff(
-      {
-        type: "request_update",
-        title: priority === "high" ? "New high-priority request" : "New request",
-        message: `${categoryName}: ${description.slice(0, 120)}`,
-        requestId: requestRow.id,
-      },
-      userId,
-    );
+    if (responseMode === "human") {
+      await notifyStaff(
+        {
+          type: "request_update",
+          title: priority === "high" ? "New high-priority request" : "New request",
+          message: `${categoryName}: ${description.slice(0, 120)}`,
+          requestId: requestRow.id,
+        },
+        userId,
+      );
+    }
 
     publishEvent("request.created", {
       requestId: requestRow.id,
@@ -218,7 +357,8 @@ router.post(
 
     res.status(201).json({
       ...mapRequestRow(requestRow, categoryName, "submitted"),
-      messages: [mapMessageRow(messageRow)],
+      messages: [mapMessageRow(messageRow), ...(aiReply ? [aiReply] : [])],
+      ...(aiError ? { aiError } : {}),
     });
   }),
 );
@@ -228,6 +368,91 @@ router.get(
   asyncRoute(async (req: Request, res: Response) => {
     await assertRequestAccess(req.params.id, req.user!);
     res.json(await loadRequestDetail(req.params.id, req.user!));
+  }),
+);
+
+router.patch(
+  "/:id/response-mode",
+  requireRole("customer"),
+  asyncRoute(async (req: Request, res: Response) => {
+    const { responseMode } = req.body as { responseMode?: string };
+    if (responseMode !== "human" && responseMode !== "ai") {
+      throw badRequest('responseMode must be "human" or "ai"');
+    }
+
+    await assertRequestAccess(req.params.id, req.user!);
+    const current = await prisma.requests.findUnique({
+      where: { id: req.params.id },
+      select: {
+        response_mode: true,
+        status_id: true,
+        closed_at: true,
+        title: true,
+        description: true,
+        ticket_number: true,
+      },
+    });
+    if (!current) throw notFound("Request not found");
+
+    const finalIds = await finalStatusIds();
+    if (current.closed_at || (current.status_id && finalIds.includes(current.status_id))) {
+      throw new HttpError(409, "Response mode can only be changed while the ticket is open");
+    }
+
+    const updated = await prisma.requests.update({
+      where: { id: req.params.id },
+      data: { response_mode: responseMode, updated_at: new Date() },
+    });
+
+    let aiError: string | undefined;
+    if (current.response_mode !== responseMode) {
+      const lastMessage =
+        responseMode === "ai"
+          ? await prisma.request_messages.findFirst({
+              where: { request_id: req.params.id },
+              orderBy: { created_at: "desc" },
+              select: { sender_type: true, message: true },
+            })
+          : null;
+      const modeMessageRow = (await prisma.request_messages.create({
+        data: {
+          request_id: req.params.id,
+          sender_type: "system",
+          sender_id: null,
+          message:
+            responseMode === "ai"
+              ? "The customer switched this conversation to AI assistant mode. The existing ticket history is preserved."
+              : "The customer switched this conversation to Human support. The existing ticket history is preserved for staff follow-up.",
+        },
+      })) as unknown as RequestMessageRow;
+      void publish(
+        { userIds: [req.user!.id], staff: true },
+        { type: "message", requestId: req.params.id, message: mapMessageRow(modeMessageRow) },
+      );
+
+      if (lastMessage?.sender_type === "customer" && lastMessage.message.trim()) {
+        try {
+          await generateTicketAiReply(req.params.id, current, req.user!, lastMessage.message);
+        } catch (error) {
+          console.error(`AI ticket reply failed after mode switch for request ${req.params.id}:`, error);
+          aiError = "AI mode is on, but the assistant couldn't reply yet. Send another message or switch to Human mode.";
+        }
+      }
+    }
+
+    if (current.response_mode !== responseMode && responseMode === "human") {
+      await notifyStaff(
+        {
+          type: "support",
+          title: "Customer requested human support",
+          message: `A customer switched "${current.title}" to Human mode.`,
+          requestId: req.params.id,
+        },
+        req.user!.id,
+      );
+    }
+
+    res.json({ ...(await loadRequestDetail(updated.id, req.user!)), ...(aiError ? { aiError } : {}) });
   }),
 );
 
@@ -431,13 +656,29 @@ router.get(
 /** sender_id/sender_type are always derived from req.user — never trusted from the client. */
 router.post(
   "/:id/messages",
+  limitAiTicketMessages,
   asyncRoute(async (req: Request, res: Response) => {
     const user = req.user!;
     const access = await assertRequestAccess(req.params.id, user);
+    const request = await prisma.requests.findUnique({
+      where: { id: req.params.id },
+      select: {
+        response_mode: true,
+        title: true,
+        description: true,
+        ticket_number: true,
+        status_id: true,
+        closed_at: true,
+      },
+    });
+    if (!request) throw notFound("Request not found");
     const { text = "", forAttachment } = req.body as { text?: string; forAttachment?: boolean };
     // The app posts an empty message first and attaches the file to it, so an
     // attachment-only message may have no text; anything else needs some.
     if (typeof text !== "string" || (!text && forAttachment !== true)) throw badRequest("text is required");
+    if (isStaff(user.role) && request.response_mode === "ai") {
+      throw new HttpError(409, "This ticket is in AI mode. The customer must switch it to Human mode before staff can reply.");
+    }
 
     const data = (await prisma.request_messages.create({
       data: {
@@ -449,6 +690,25 @@ router.post(
     })) as unknown as RequestMessageRow;
 
     const mapped = mapMessageRow(data);
+    let aiReply: ReturnType<typeof mapMessageRow> | undefined;
+    let aiError: string | undefined;
+
+    const finalIds = await finalStatusIds();
+    const shouldGenerateAiReply =
+      user.role === "customer" &&
+      request.response_mode === "ai" &&
+      text.trim().length > 0 &&
+      !request.closed_at &&
+      !(request.status_id && finalIds.includes(request.status_id));
+
+    if (shouldGenerateAiReply) {
+      try {
+        aiReply = await generateTicketAiReply(req.params.id, request, user, text);
+      } catch (error) {
+        console.error(`AI ticket reply failed for request ${req.params.id}:`, error);
+        aiError = "Your message was saved, but the AI assistant couldn't reply. Switch to Human mode or try again later.";
+      }
+    }
 
     // Instant delivery: push the saved message to the customer and every
     // connected staff member (open-queue semantics) before doing anything
@@ -457,7 +717,7 @@ router.post(
       { userIds: [access.customer_id], staff: true },
       { type: "message", requestId: req.params.id, message: mapped },
     );
-    res.status(201).json(mapped);
+    res.status(201).json({ ...mapped, ...(aiReply ? { aiReply } : {}), ...(aiError ? { aiError } : {}) });
 
     // Notifications are a side effect, so they no longer hold up the reply
     // the sender is waiting on (they used to be awaited before responding).
@@ -475,11 +735,13 @@ router.post(
           // staff queue if nobody has picked it up yet.
           const owner = await prisma.requests.findUnique({
             where: { id: req.params.id },
-            select: { assigned_agent_id: true },
+            select: { assigned_agent_id: true, response_mode: true },
           });
-          const message = { type: "support" as const, title: "Customer replied", message: preview, requestId: req.params.id };
-          if (owner?.assigned_agent_id) await notifyUsers([owner.assigned_agent_id], message, user.id);
-          else await notifyStaff(message, user.id);
+          if (owner?.response_mode === "human") {
+            const message = { type: "support" as const, title: "Customer replied", message: preview, requestId: req.params.id };
+            if (owner.assigned_agent_id) await notifyUsers([owner.assigned_agent_id], message, user.id);
+            else await notifyStaff(message, user.id);
+          }
         }
       } catch (err) {
         console.error("Failed to send message notifications:", err);
