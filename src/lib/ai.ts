@@ -12,6 +12,7 @@ import type { EscalationDraft } from "./agent-tools.js";
 import { detectBoundaryViolation } from "./ai-boundary.js";
 import { checkForClarification } from "./clarification.js";
 import { packIntoBudget } from "./context-budget.js";
+import type { McpAgentTools } from "./mcp-agent-tools.js";
 import { buildSystemPrompt } from "./prompts/system-prompt.js";
 import { runReActLoop, type ReActStep, type TraceEvent } from "./react-agent.js";
 import { shouldUseSubAgents } from "./sub-agents.js";
@@ -235,6 +236,8 @@ export async function generateAssistantReply(
   onUsage?: (usage: { inputTokens: number; outputTokens: number }) => void,
   /** An admin-selected agent_providers id to use for this reply (staff chat only). */
   preferredProviderId?: string,
+  allowEscalationDraft = true,
+  mcpTools?: McpAgentTools,
 ): Promise<AiAnswer> {
   // Clarification Prompting Logic: a deterministic gate, not a prompt
   // instruction — runs before the LLM (or the keyword fallback) ever sees
@@ -281,7 +284,7 @@ export async function generateAssistantReply(
 
     // Large evidence is read once by a researcher sub-agent (lib/sub-agents.ts) instead of
     // riding along in every coordinator call; small contexts stay inline, where that is cheaper.
-    const delegateKnowledge = knowledgeContext.length > 0 && shouldUseSubAgents(knowledgeContext);
+    const delegateKnowledge = !mcpTools && knowledgeContext.length > 0 && shouldUseSubAgents(knowledgeContext);
     const systemPrompt = buildSystemPrompt({
       knowledgeContext,
       requestContext,
@@ -302,6 +305,8 @@ export async function generateAssistantReply(
       onUsage,
       delegateKnowledge ? { knowledgeContext } : undefined,
       preferredProviderId,
+      allowEscalationDraft ? [] : ["draft_escalation_ticket"],
+      mcpTools,
     );
 
     // Structural backstop: the prompt (lib/prompts/system-prompt.ts, rule 2)

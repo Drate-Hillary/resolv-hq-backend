@@ -16,6 +16,7 @@
 //            in which case the loop stops and returns a safe fallback
 //            rather than looping forever.
 import { buildEscalationDraft, executeAgentTool, type EscalationDraft } from "./agent-tools.js";
+import type { McpAgentTools } from "./mcp-agent-tools.js";
 import type { AiAccountInput, AiKnowledgeInput, AiRequestInput } from "./ai.js";
 import { TOOL_OBSERVATION_BUDGET_CHARS, truncateAtBoundary } from "./context-budget.js";
 import {
@@ -98,6 +99,8 @@ export async function runReActLoop(
   delegation?: { knowledgeContext: string },
   /** An admin-selected agent_providers id: tried first on every model call, the others stay as fallback. */
   preferredProviderId?: string,
+  disabledToolNames: string[] = [],
+  mcpTools?: McpAgentTools,
 ): Promise<ReActResult> {
   const messages: LlmMessage[] = [
     { role: "system", content: systemPrompt },
@@ -109,7 +112,9 @@ export async function runReActLoop(
   const handoffs: ProviderHandoff[] = [];
   const excludedProviderIds = new Set<string>();
   let escalationDraft: EscalationDraft | undefined;
-  const activeTools = await getActiveToolDefinitions();
+  const disabledTools = new Set(disabledToolNames);
+  const activeTools = (mcpTools ? await mcpTools.listTools() : await getActiveToolDefinitions())
+    .filter((tool) => !disabledTools.has(tool.name));
   // In sub-agent mode the coordinator sees one delegate tool (plus the drafting tool), which also
   // keeps the long list of tool schemas out of every model call.
   const tools = delegation
@@ -270,7 +275,20 @@ export async function runReActLoop(
 
         trace.push({ phase: "act", detail: `${call.name}(${JSON.stringify(call.arguments)})` });
         const toolStart = Date.now();
-        const observation = executeAgentTool(call.name, call.arguments, { knowledge, activeRequests, account });
+        let observation: string;
+        let toolError: string | undefined;
+        try {
+          observation = mcpTools
+            ? await mcpTools.callTool(call.name, call.arguments)
+            : executeAgentTool(call.name, call.arguments, { knowledge, activeRequests, account });
+          if (observation.startsWith("MCP tool \"") && observation.includes("\" error:")) {
+            toolError = observation;
+          }
+        } catch (error) {
+          observation = `MCP tool "${call.name}" failed.`;
+          toolError = error instanceof Error ? error.message : String(error);
+          console.error(`ReAct loop: MCP tool "${call.name}" failed:`, error);
+        }
         traceEvents.push({
           kind: "tool_call",
           iteration,
@@ -278,6 +296,7 @@ export async function runReActLoop(
           toolInput: call.arguments,
           detail: truncateAtBoundary(observation, TRACE_DETAIL_CHARS),
           latencyMs: Date.now() - toolStart,
+          error: toolError,
         });
         if (call.name === "draft_escalation_ticket") {
           escalationDraft = buildEscalationDraft(call.arguments) ?? escalationDraft;
